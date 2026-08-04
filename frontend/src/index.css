@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* A serif accent, not a second body face -- used sparingly (the app
+   title, section headings, match-confidence numbers) as the one
+   typographic accent from the UI/UX concept board, everything else stays
+   on the default sans. System-safe stack: no webfont to load, and a CJK
+   fallback so Traditional Chinese headings don't silently fall through to
+   a generic system serif with worse spacing. */
+.font-display {
+  font-family: Georgia, 'Noto Serif TC', 'PMingLiU', ui-serif, serif;
+}

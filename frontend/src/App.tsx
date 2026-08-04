@@ -1,0 +1,512 @@
+import { useEffect, useRef, useState } from 'react'
+import {
+  getDebugStatus,
+  getEvent,
+  getInsights,
+  getInterests,
+  listEvents,
+  listSaved,
+  runIngest,
+  saveEvent,
+  setInterests,
+  submitFeedback,
+  unsaveEvent,
+} from './api'
+import AskBar from './components/AskBar'
+import EventCard from './components/EventCard'
+import EventDetailModal from './components/EventDetailModal'
+import Footer from './components/Footer'
+import InsightsPanel from './components/InsightsPanel'
+import InterestForm from './components/InterestForm'
+import RerankStatusBar from './components/RerankStatusBar'
+import SuggestionsView from './components/SuggestionsView'
+import TimelineView from './components/TimelineView'
+import { countKeywordMatches, filterEvents } from './filterEvents'
+import { canonicalKey } from './keywordMatch'
+import { useLanguage, type Lang } from './i18n'
+import type { DebugStatus, EventItem, EventStatus, Insights, InterestProfile, TagFilter } from './types'
+
+type Tab = 'suggestions' | 'events' | 'timeline' | 'saved' | 'insights'
+// Suggestions leads -- "what should I actually go to" is the question a
+// returning user has, ahead of browsing everything ongoing/upcoming/past.
+// Ongoing/Upcoming/Past used to be three separate top-level tabs, but
+// they're really one dataset with a status filter, not three different
+// views -- collapsed into one "Events" tab with a segmented filter inside
+// it (see eventsStatusFilter below), the same pattern Suggestions already
+// uses for its list/swipe toggle. Cut the tab bar from 7 entries to 5,
+// which matters most on mobile where it was previously wide enough to
+// force wrapping/scrolling on its own.
+const TABS: Tab[] = ['suggestions', 'events', 'timeline', 'saved', 'insights']
+const EVENT_STATUS_FILTERS: EventStatus[] = ['ongoing', 'upcoming', 'far_future', 'past']
+
+// Below this, a "match" isn't confident enough to call out as a
+// suggestion -- every event still gets a full listing in its own
+// ongoing/upcoming tab regardless, this only gates the curated view.
+const HIGH_MATCH_THRESHOLD = 70
+
+// Collapses terms that stem to the same tokens (e.g. "book fair" and "book
+// fairs" -- one from the LLM-derived categories, one from the user's own
+// keywords) into a single chip. First occurrence wins, so callers order
+// `terms` by which source they'd rather display.
+function dedupeTerms(terms: string[]): string[] {
+  const seen = new Map<string, string>()
+  for (const term of terms) {
+    const trimmed = term.trim()
+    if (!trimmed) continue
+    const key = canonicalKey(trimmed)
+    if (key && !seen.has(key)) seen.set(key, trimmed)
+  }
+  return Array.from(seen.values())
+}
+
+function App() {
+  const { lang, setLang, t } = useLanguage()
+  const [profile, setProfile] = useState<InterestProfile | null>(null)
+  const [tab, setTab] = useState<Tab>('suggestions')
+  const [eventsStatusFilter, setEventsStatusFilter] = useState<EventStatus>('ongoing')
+  const [events, setEvents] = useState<EventItem[]>([])
+  const [loading, setLoading] = useState(false)
+  const [ingesting, setIngesting] = useState(false)
+  const [status, setStatus] = useState('')
+  const [insightsRefreshSignal, setInsightsRefreshSignal] = useState(0)
+  const [tagFilter, setTagFilter] = useState<TagFilter | null>(null)
+  const [keywordFilter, setKeywordFilter] = useState('')
+  const [timelineEvents, setTimelineEvents] = useState<EventItem[]>([])
+  const [savedEvents, setSavedEvents] = useState<EventItem[]>([])
+  const [debugStatus, setDebugStatus] = useState<DebugStatus | null>(null)
+  const [quotaInsights, setQuotaInsights] = useState<Insights | null>(null)
+
+  // The one shared destination for "show me this event's own card" from
+  // anywhere that isn't already a card list -- Timeline's Gantt bars and
+  // the ask box's referenced events. A modal rather than switching tabs,
+  // since the target event isn't guaranteed to be in whatever list the
+  // current tab has loaded. Opening from an id (ask box) fetches that one
+  // event fresh; opening from an already-loaded EventItem (Timeline, which
+  // has the full object in hand already) skips the round trip entirely.
+  const [modalOpen, setModalOpen] = useState(false)
+  const [modalEvent, setModalEvent] = useState<EventItem | null>(null)
+  const [modalLoading, setModalLoading] = useState(false)
+
+  const openEventModal = async (eventOrId: EventItem | number) => {
+    setModalOpen(true)
+    if (typeof eventOrId === 'number') {
+      setModalLoading(true)
+      setModalEvent(null)
+      try {
+        setModalEvent(await getEvent(eventOrId))
+      } catch {
+        setModalEvent(null)
+      } finally {
+        setModalLoading(false)
+      }
+    } else {
+      setModalEvent(eventOrId)
+    }
+  }
+  const closeEventModal = () => {
+    setModalOpen(false)
+    setModalEvent(null)
+  }
+
+  // Deliberately doesn't touch `loading` itself -- it's called both on tab
+  // switch (where a loading state makes sense) and from silent background
+  // refreshes/polls (where flashing "Loading…" every 15s would be a bug,
+  // not a feature). Callers that want the spinner wrap this themselves.
+  const loadEvents = async (s: EventStatus) => {
+    setEvents(await listEvents(s))
+  }
+
+  // Read inside the poll callback below instead of closing over `tab`
+  // directly -- a setInterval callback captures whatever `tab` was at the
+  // moment it was created, so without this it would keep refreshing
+  // whichever tab you saved *from*, even after you'd switched away.
+  const tabRef = useRef(tab)
+  useEffect(() => {
+    tabRef.current = tab
+  }, [tab])
+  // Same stale-closure reason as tabRef -- pollForFreshScores's interval
+  // callback is created once and lives for ~2.5 min, so it needs a way to
+  // read the *current* status filter rather than whatever it was when the
+  // poll started.
+  const eventsStatusFilterRef = useRef(eventsStatusFilter)
+  useEffect(() => {
+    eventsStatusFilterRef.current = eventsStatusFilter
+  }, [eventsStatusFilter])
+  const pollTimerRef = useRef<number | null>(null)
+
+  const refetchActiveTab = async (activeTab: Tab) => {
+    if (activeTab === 'insights') return
+    if (activeTab === 'timeline' || activeTab === 'suggestions') {
+      const [ongoing, upcoming] = await Promise.all([listEvents('ongoing'), listEvents('upcoming')])
+      setTimelineEvents([...ongoing, ...upcoming])
+    } else if (activeTab === 'saved') {
+      setSavedEvents(await listSaved())
+    } else if (activeTab === 'events') {
+      await loadEvents(eventsStatusFilterRef.current)
+    }
+  }
+
+  // A rerank triggered by a save or Refresh runs as an async background job
+  // on the server -- several sequential LLM calls, up to ~2 minutes for the
+  // full catalog. Refetching once right after triggering it just shows
+  // whatever was there before (this was the actual bug: scores looked
+  // "stuck" because nothing ever re-fetched once the rerank actually
+  // finished). Poll a few times over that window instead of requiring a
+  // manually-remembered second Refresh click.
+  const pollForFreshScores = () => {
+    if (pollTimerRef.current !== null) window.clearInterval(pollTimerRef.current)
+    let attempts = 0
+    const maxAttempts = 10 // ~2.5 min at 15s apart
+    pollTimerRef.current = window.setInterval(() => {
+      attempts += 1
+      refetchActiveTab(tabRef.current)
+      setInsightsRefreshSignal((n) => n + 1)
+      if (attempts >= maxAttempts && pollTimerRef.current !== null) {
+        window.clearInterval(pollTimerRef.current)
+        pollTimerRef.current = null
+        setStatus('')
+      }
+    }, 15000)
+  }
+
+  useEffect(() => {
+    return () => {
+      if (pollTimerRef.current !== null) window.clearInterval(pollTimerRef.current)
+    }
+  }, [])
+
+  // Runs continuously, independent of pollForFreshScores above -- that one
+  // is bounded (~2.5 min, only after a save/refresh) and refetches the
+  // heavier event list; this one is a cheap status read that should stay
+  // current any time the app is open, not just right after you triggered
+  // something, so the "last rerank" line is trustworthy even if you just
+  // arrived on the page.
+  // Also detects when a background (scheduled) rerank finishes and
+  // auto-refreshes the active tab, so a tab left open picks up fresh scores
+  // without requiring the bounded 2.5-min poll window pollForFreshScores
+  // sets up (which only ever runs after a user's own save/refresh action).
+  //
+  // Compares last_rerank.at (a timestamp that only ever changes when a
+  // rerank actually completes) rather than watching rerank.in_progress for
+  // a true→false transition -- the previous version did that, and real
+  // scheduled reranks in this app's own logs regularly finish in well under
+  // 10 seconds (e.g. a "nothing changed" pass, a few hundred ms), so the
+  // 10s poll interval could easily land on two consecutive "false" reads
+  // and never observe the brief "true" in between, silently never
+  // refreshing at all. A timestamp comparison can't miss a fast rerank the
+  // same way a boolean-transition check can.
+  const lastRerankAtRef = useRef<string | null>(null)
+  useEffect(() => {
+    const fetchStatus = () => {
+      getDebugStatus().then((ds) => {
+        setDebugStatus(ds)
+        const at = ds.last_rerank?.at ?? null
+        if (lastRerankAtRef.current !== null && at !== null && at !== lastRerankAtRef.current) {
+          refetchActiveTab(tabRef.current)
+          setInsightsRefreshSignal((n) => n + 1)
+        }
+        lastRerankAtRef.current = at
+      }).catch(() => {})
+      getInsights().then(setQuotaInsights).catch(() => {})
+    }
+    fetchStatus()
+    const id = window.setInterval(fetchStatus, 10000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  useEffect(() => {
+    getInterests().then(setProfile)
+  }, [])
+
+  useEffect(() => {
+    if (tab === 'insights') {
+      setInsightsRefreshSignal((n) => n + 1)
+      return
+    }
+    setLoading(true)
+    refetchActiveTab(tab).finally(() => setLoading(false))
+    // eventsStatusFilter only ever changes while tab === 'events' (the
+    // segmented control that changes it only renders there), so adding it
+    // here doesn't cause a refetch on unrelated tabs -- it's what makes
+    // switching Ongoing/Upcoming/Past *within* the Events tab actually load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, eventsStatusFilter])
+
+  const handleSaveInterests = async (rawText: string, excludedKeywords: string[]) => {
+    const updated = await setInterests(rawText, excludedKeywords)
+    setProfile(updated)
+    setStatus(t('status.savedReranking'))
+    pollForFreshScores()
+  }
+
+  const handleRefresh = async () => {
+    setIngesting(true)
+    setStatus(t('status.fetching'))
+    try {
+      const summary = await runIngest()
+      setStatus(t('status.fetchedSummary', { fetched: summary.fetched, new: summary.new, updated: summary.updated }))
+      await refetchActiveTab(tab)
+      setInsightsRefreshSignal((n) => n + 1)
+      pollForFreshScores()
+    } finally {
+      setIngesting(false)
+    }
+  }
+
+  const handleFeedback = async (id: number, signal: 'up' | 'down' | 'none') => {
+    await submitFeedback(id, signal)
+    // Updates in place rather than removing the card -- the vote itself is
+    // now visible on the card (see EventCard), so there's no need to yank a
+    // 👎'd event out of the list; that used to happen with zero explanation
+    // and no way to undo a misclick.
+    const patch = (list: EventItem[]) =>
+      list.map((e) => (e.id === id ? { ...e, user_signal: signal === 'none' ? null : signal } : e))
+    setEvents(patch)
+    setTimelineEvents(patch)
+    setSavedEvents(patch)
+    setModalEvent((prev) => (prev && patch([prev])[0]) || prev)
+  }
+
+  const handleToggleSave = async (id: number, shouldSave: boolean) => {
+    await (shouldSave ? saveEvent(id) : unsaveEvent(id))
+    const patch = (list: EventItem[]) => list.map((e) => (e.id === id ? { ...e, saved: shouldSave } : e))
+    setEvents(patch)
+    setTimelineEvents(patch)
+    // Unsaving drops it from the Saved tab's own list immediately (that IS
+    // the point of the action there); saving a not-yet-loaded item into that
+    // list isn't needed -- switching to the tab re-fetches it fresh anyway.
+    setSavedEvents((prev) => (shouldSave ? prev.map((e) => (e.id === id ? { ...e, saved: true } : e)) : prev.filter((e) => e.id !== id)))
+    setModalEvent((prev) => (prev && prev.id === id ? { ...prev, saved: shouldSave } : prev))
+  }
+
+  const handleTagClick = (f: TagFilter) => {
+    setTagFilter((prev) => (prev && prev.type === f.type && prev.value === f.value ? null : f))
+  }
+
+  const handleInterestChipClick = (term: string) => {
+    setKeywordFilter((prev) => (prev.toLowerCase() === term.toLowerCase() ? '' : term))
+  }
+
+  // Only surface a suggested-keyword chip if it actually narrows things down
+  // to more than one event -- a term that matches 0 or 1 events isn't a
+  // useful shortcut and just clutters the row. Counted against whatever the
+  // active tab already has loaded (timeline/suggestions share one list).
+  const activeEventList = tab === 'timeline' || tab === 'suggestions' ? timelineEvents : tab === 'saved' ? savedEvents : events
+  const interestTerms = profile ? dedupeTerms([...profile.keywords, ...profile.categories]) : []
+  const suggestedKeywords = interestTerms.filter((term) => countKeywordMatches(activeEventList, term) > 1)
+
+  const displayedEvents = filterEvents(tab === 'saved' ? savedEvents : events, tagFilter, keywordFilter)
+  const displayedTimelineEvents = filterEvents(timelineEvents, tagFilter, keywordFilter)
+  // Ongoing+upcoming, high-confidence matches only, best score first --
+  // the "what should I actually go to" view. Everything below the
+  // threshold is still fully browsable in Ongoing/Upcoming, just not
+  // singled out here.
+  const displayedSuggestions = [...displayedTimelineEvents]
+    .filter((e) => e.llm_score != null && e.llm_score >= HIGH_MATCH_THRESHOLD)
+    .sort((a, b) => (b.llm_score ?? 0) - (a.llm_score ?? 0))
+  const cardListEvents = tab === 'suggestions' ? displayedSuggestions : displayedEvents
+  const emptyMessage =
+    tagFilter || keywordFilter
+      ? t('empty.noMatch')
+      : tab === 'suggestions'
+        ? t('empty.noSuggestions')
+        : tab === 'saved'
+          ? t('empty.noSaved')
+          : t('empty.noEvents')
+
+  // The Timeline/Gantt view wants the full browser width to be readable
+  // (it's a horizontally-scrolling chart, not prose) -- everything else
+  // stays in the narrow reading-width column. Header/interests/tabs/filters
+  // always stay narrow; only the content area below switches width.
+  const contentWidthClass = tab === 'timeline' ? 'w-full px-4' : 'max-w-3xl mx-auto w-full px-4'
+
+  return (
+    <div className="py-8 flex flex-col gap-6">
+      <div className="max-w-3xl mx-auto w-full px-4 flex flex-col gap-6">
+        <header className="flex items-center justify-between gap-3">
+          <div>
+            <h1 className="font-display text-2xl font-bold">{t('app.title')}</h1>
+            <p className="text-sm text-black/60 dark:text-white/60">{t('app.tagline')}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="inline-flex rounded-md border border-black/10 dark:border-white/10 overflow-hidden text-sm">
+              {(['zh-Hant', 'en'] as Lang[]).map((l) => (
+                <button
+                  key={l}
+                  onClick={() => setLang(l)}
+                  className={`px-2.5 py-1.5 font-medium ${
+                    lang === l
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-transparent text-black/60 dark:text-white/60 hover:bg-black/5 dark:hover:bg-white/10'
+                  }`}
+                >
+                  {l === 'zh-Hant' ? t('lang.zh') : t('lang.en')}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={handleRefresh}
+              disabled={ingesting}
+              className="px-4 py-2 rounded-md bg-black text-white dark:bg-white dark:text-black text-sm font-medium disabled:opacity-50"
+            >
+              {ingesting ? t('refreshing') : t('refresh')}
+            </button>
+          </div>
+        </header>
+
+        <RerankStatusBar debugStatus={debugStatus} insights={quotaInsights} />
+
+        {status && <p className="text-sm text-black/50 dark:text-white/50">{status}</p>}
+
+        <InterestForm profile={profile} onSave={handleSaveInterests} />
+
+        <AskBar onOpenEvent={openEventModal} />
+
+        <div>
+          <div className="flex gap-1 border-b border-black/10 dark:border-white/10 mb-4">
+            {TABS.map((tabKey) => (
+              <button
+                key={tabKey}
+                onClick={() => setTab(tabKey)}
+                className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px ${
+                  tab === tabKey
+                    ? 'border-purple-600 text-purple-600 dark:text-purple-400'
+                    : 'border-transparent text-black/50 dark:text-white/50'
+                }`}
+              >
+                {t(`tab.${tabKey}`)}
+              </button>
+            ))}
+          </div>
+
+          {tab === 'events' && (
+            <div className="inline-flex self-start rounded-md border border-black/10 dark:border-white/10 overflow-hidden text-sm mb-2">
+              {EVENT_STATUS_FILTERS.map((status) => (
+                <button
+                  key={status}
+                  onClick={() => setEventsStatusFilter(status)}
+                  className={`px-3 py-1.5 font-medium transition-colors ${
+                    eventsStatusFilter === status
+                      ? 'bg-purple-600 text-white'
+                      : 'text-black/60 dark:text-white/60 hover:bg-black/5 dark:hover:bg-white/10'
+                  }`}
+                >
+                  {t(`tab.${status}`)}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {tab !== 'insights' && (
+            <div className="flex flex-col gap-2">
+              <div className="relative">
+                <input
+                  type="text"
+                  value={keywordFilter}
+                  onChange={(e) => setKeywordFilter(e.target.value)}
+                  placeholder={t('filter.placeholder')}
+                  className="w-full rounded-md border border-black/10 dark:border-white/10 bg-transparent px-3 py-2 pr-8 text-sm"
+                />
+                {keywordFilter && (
+                  <button
+                    onClick={() => setKeywordFilter('')}
+                    aria-label={t('filter.clear')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-black/40 dark:text-white/40 hover:opacity-70"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+
+              {suggestedKeywords.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  <span className="text-black/40 dark:text-white/40">{t('filter.suggestedKeywords')}</span>
+                  {suggestedKeywords.map((term) => (
+                    <button
+                      key={term}
+                      onClick={() => handleInterestChipClick(term)}
+                      className={`px-2 py-0.5 rounded-full ${
+                        keywordFilter.toLowerCase() === term.toLowerCase()
+                          ? 'bg-purple-600 text-white'
+                          : 'bg-black/5 dark:bg-white/10 text-black/60 dark:text-white/60 hover:bg-black/10 dark:hover:bg-white/20'
+                      }`}
+                    >
+                      {term}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {tagFilter && (
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="text-black/50 dark:text-white/50">{t('filter.filteringBy')}</span>
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-purple-600 text-white">
+                    {tagFilter.value}
+                    <button
+                      onClick={() => setTagFilter(null)}
+                      aria-label={t('filter.clearTag')}
+                      className="hover:opacity-70"
+                    >
+                      ×
+                    </button>
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className={contentWidthClass}>
+        {tab === 'insights' ? (
+          <InsightsPanel refreshSignal={insightsRefreshSignal} />
+        ) : loading ? (
+          <p className="text-sm text-black/50 dark:text-white/50">{t('loading')}</p>
+        ) : tab === 'timeline' ? (
+          <TimelineView events={displayedTimelineEvents} onEventClick={openEventModal} />
+        ) : tab === 'suggestions' ? (
+          <SuggestionsView
+            events={cardListEvents}
+            profile={profile}
+            onFeedback={handleFeedback}
+            onToggleSave={handleToggleSave}
+            activeFilter={tagFilter}
+            onTagClick={handleTagClick}
+            emptyMessage={emptyMessage}
+          />
+        ) : cardListEvents.length === 0 ? (
+          <p className="text-sm text-black/50 dark:text-white/50">{emptyMessage}</p>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {cardListEvents.map((event) => (
+              <EventCard
+                key={event.id}
+                event={event}
+                profile={profile}
+                onFeedback={handleFeedback}
+                onToggleSave={handleToggleSave}
+                activeFilter={tagFilter}
+                onTagClick={handleTagClick}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {modalOpen && (
+        <EventDetailModal
+          event={modalEvent}
+          loading={modalLoading}
+          profile={profile}
+          onFeedback={handleFeedback}
+          onToggleSave={handleToggleSave}
+          onClose={closeEventModal}
+        />
+      )}
+
+      <Footer debugStatus={debugStatus} />
+    </div>
+  )
+}
+
+export default App
