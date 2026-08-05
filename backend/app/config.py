@@ -15,7 +15,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 # daily quota is exhausted -- see app/llm_client.py's key-rotation logic.
 # Optional: blank disables rotation, same behavior as before it existed.
 OPENAI_API_KEY_FALLBACK = os.environ.get("OPENAI_API_KEY_FALLBACK", "")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4-mini")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "")
 
 # DeepSeek fallback -- used once the shared chatanywhere.tech quota (200/day,
