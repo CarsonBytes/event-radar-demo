@@ -13,6 +13,7 @@ import {
   unsaveEvent,
 } from './api'
 import AskBar from './components/AskBar'
+import DisclaimerView from './components/DisclaimerView'
 import EventCard from './components/EventCard'
 import EventDetailModal from './components/EventDetailModal'
 import Footer from './components/Footer'
@@ -26,7 +27,7 @@ import { canonicalKey } from './keywordMatch'
 import { useLanguage, type Lang } from './i18n'
 import type { DebugStatus, EventItem, EventStatus, Insights, InterestProfile, TagFilter } from './types'
 
-type Tab = 'suggestions' | 'events' | 'timeline' | 'saved' | 'insights'
+type Tab = 'suggestions' | 'events' | 'timeline' | 'saved' | 'insights' | 'disclaimer'
 // Suggestions leads -- "what should I actually go to" is the question a
 // returning user has, ahead of browsing everything ongoing/upcoming/past.
 // Ongoing/Upcoming/Past used to be three separate top-level tabs, but
@@ -36,7 +37,7 @@ type Tab = 'suggestions' | 'events' | 'timeline' | 'saved' | 'insights'
 // uses for its list/swipe toggle. Cut the tab bar from 7 entries to 5,
 // which matters most on mobile where it was previously wide enough to
 // force wrapping/scrolling on its own.
-const TABS: Tab[] = ['suggestions', 'events', 'timeline', 'saved', 'insights']
+const TABS: Tab[] = ['suggestions', 'events', 'timeline', 'saved', 'insights', 'disclaimer']
 const EVENT_STATUS_FILTERS: EventStatus[] = ['ongoing', 'upcoming', 'far_future', 'past']
 
 // Below this, a "match" isn't confident enough to call out as a
@@ -135,7 +136,7 @@ function App() {
   const pollTimerRef = useRef<number | null>(null)
 
   const refetchActiveTab = async (activeTab: Tab) => {
-    if (activeTab === 'insights') return
+    if (activeTab === 'insights' || activeTab === 'disclaimer') return
     if (activeTab === 'timeline' || activeTab === 'suggestions') {
       const [ongoing, upcoming] = await Promise.all([listEvents('ongoing'), listEvents('upcoming')])
       setTimelineEvents([...ongoing, ...upcoming])
@@ -223,6 +224,7 @@ function App() {
       setInsightsRefreshSignal((n) => n + 1)
       return
     }
+    if (tab === 'disclaimer') return
     setLoading(true)
     refetchActiveTab(tab).finally(() => setLoading(false))
     // eventsStatusFilter only ever changes while tab === 'events' (the
@@ -327,6 +329,7 @@ function App() {
           <div>
             <h1 className="font-display text-2xl font-bold">{t('app.title')}</h1>
             <p className="text-sm text-black/60 dark:text-white/60">{t('app.tagline')}</p>
+            <p className="text-xs text-black/40 dark:text-white/40">{t('app.taglineNote')}</p>
           </div>
           <div className="flex items-center gap-2">
             <div className="inline-flex rounded-md border border-black/10 dark:border-white/10 overflow-hidden text-sm">
@@ -397,7 +400,7 @@ function App() {
             </div>
           )}
 
-          {tab !== 'insights' && (
+          {tab !== 'insights' && tab !== 'disclaimer' && (
             <div className="flex flex-col gap-2">
               <div className="relative">
                 <input
@@ -460,6 +463,8 @@ function App() {
       <div className={contentWidthClass}>
         {tab === 'insights' ? (
           <InsightsPanel refreshSignal={insightsRefreshSignal} />
+        ) : tab === 'disclaimer' ? (
+          <DisclaimerView debugStatus={debugStatus} />
         ) : loading ? (
           <p className="text-sm text-black/50 dark:text-white/50">{t('loading')}</p>
         ) : tab === 'timeline' ? (
@@ -504,7 +509,7 @@ function App() {
         />
       )}
 
-      <Footer debugStatus={debugStatus} />
+      <Footer debugStatus={debugStatus} onOpenDisclaimer={() => setTab('disclaimer')} />
     </div>
   )
 }

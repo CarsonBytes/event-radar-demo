@@ -2,19 +2,20 @@ import { formatRelativeTime } from '../dateUtils'
 import { useLanguage } from '../i18n'
 import type { DebugStatus } from '../types'
 
-// A public, unauthenticated app scraping several third-party sites needs
-// two things visible at the bottom of every page: how fresh the data
-// actually is (reused from /api/debug/status, already polled every 10s --
-// see App.tsx -- so this needs no fetch of its own), and a clear,
-// non-commercial-use disclaimer naming every real source. Deliberately
-// small/muted -- fine print, not a headline.
-export default function Footer({ debugStatus }: { debugStatus: DebugStatus | null }) {
+// Full legal text lives in its own tab now (DisclaimerView) -- this is
+// deliberately just a one-line copyright bar plus a link there, not a
+// second copy of the text. Freshness (last_ingest, already polled every
+// 10s by App.tsx -- see there) and the demo-scope banner stay here since
+// they're page-footer-appropriate, not disclaimer content.
+export default function Footer({
+  debugStatus,
+  onOpenDisclaimer,
+}: {
+  debugStatus: DebugStatus | null
+  onOpenDisclaimer: () => void
+}) {
   const { t, lang } = useLanguage()
   const lastIngestAt = debugStatus?.last_ingest?.at ?? null
-  // Demo deployment restricts CONNECTORS to urbtix only at the backend
-  // level (see ingest_job.py's DEMO_MODE) -- this flag only changes which
-  // disclaimer text is honest to show, it isn't what's actually enforcing
-  // the data restriction.
   const isDemo = debugStatus?.demo_mode ?? false
 
   return (
@@ -29,8 +30,11 @@ export default function Footer({ debugStatus }: { debugStatus: DebugStatus | nul
           {t('footer.lastUpdated', { time: formatRelativeTime(lastIngestAt, lang) })}
         </p>
       )}
-      <p className="text-[11px] leading-relaxed text-black/40 dark:text-white/40 max-w-2xl">
-        {t(isDemo ? 'footer.demoDisclaimer' : 'footer.disclaimer')}
+      <p className="text-xs text-black/50 dark:text-white/50">
+        {t('footer.copyright')}{' '}
+        <button onClick={onOpenDisclaimer} className="underline hover:text-black/80 dark:hover:text-white/80">
+          {t('footer.disclaimerLink')}
+        </button>
       </p>
     </footer>
   )
