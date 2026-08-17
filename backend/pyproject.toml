@@ -1,0 +1,22 @@
+[project]
+name = "event-radar-backend"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.34.0",
+    "sqlalchemy==2.0.36",
+    "httpx==0.28.1",
+    "langchain-openai>=0.2",
+    "langchain-core>=0.3",
+    "truststore>=0.10",
+    "apscheduler>=3.10,<4.0",
+    "python-dotenv==1.0.1",
+    "pydantic==2.10.4",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.uv]
+package = false

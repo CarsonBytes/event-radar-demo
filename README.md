@@ -61,6 +61,17 @@ npm run dev
 
 `DEMO_MODE=1` is required — the only connector present is urbtix, and the app is built to fail loudly (an ImportError, not a silent misconfiguration) if it isn't set, since the code for anything else genuinely isn't here.
 
+## Running with Docker
+
+This is how the live demo above is actually deployed:
+
+```bash
+cp backend/.env.example backend/.env   # fill in OPENAI_API_KEY etc.
+docker compose up --build
+```
+
+A multi-stage build (Node for the frontend, Python + [uv](https://github.com/astral-sh/uv) for the backend) producing one image that serves both from a single process on `:8000`. Base images are pinned to digest and dependencies are locked (`uv.lock`, `package-lock.json`), so a given checkout always builds the same bytes.
+
 ## Tests
 
 ```bash
