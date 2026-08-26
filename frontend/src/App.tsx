@@ -29,9 +29,29 @@ import { downloadIcsMultiple } from './ics'
 import { canonicalKey } from './keywordMatch'
 import { useLanguage, type Lang } from './i18n'
 import type { DebugStatus, EventItem, EventStatus, Insights, InterestProfile, TagFilter } from './types'
+import { parseUtc, startOfDay } from './dateUtils'
 
 type Tab = 'suggestions' | 'events' | 'timeline' | 'saved' | 'insights' | 'disclaimer'
 type SortBy = 'score' | 'date'
+type DatePreset = 'all' | 'weekend' | '7days' | 'month'
+
+function inDatePreset(ev: EventItem, preset: DatePreset): boolean {
+  if (preset === 'all') return true
+  const start = startOfDay(parseUtc(ev.start))
+  const today = startOfDay(new Date())
+  const ms = start.getTime() - today.getTime()
+  const days = Math.round(ms / 86400000)
+  if (days < 0) return false
+  if (preset === '7days') return days <= 7
+  if (preset === 'month') return days <= 30
+  // weekend: next Sat (6) / Sun (0) in HKT — approximated via UTC day of HKT midnight
+  const dow = today.getUTCDay()
+  // HKT midnight is UTC-8, so UTC day is one behind HKT day for 00:00 HKT
+  const hktDow = (dow + 1) % 7
+  const daysToSat = (6 - hktDow + 7) % 7
+  const satOffset = daysToSat === 0 ? 0 : daysToSat
+  return days >= satOffset && days <= satOffset + 1
+}
 // Suggestions leads -- "what should I actually go to" is the question a
 // returning user has, ahead of browsing everything ongoing/upcoming/past.
 // Ongoing/Upcoming/Past used to be three separate top-level tabs, but
@@ -168,6 +188,8 @@ function App() {
     initialRoute.tagType && initialRoute.tagValue ? { type: initialRoute.tagType, value: initialRoute.tagValue } : null,
   )
   const [keywordFilter, setKeywordFilter] = useState('')
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [datePreset, setDatePreset] = useState<DatePreset>('all')
 
   // A4: global search across the whole catalog (server-side), distinct
   // from the client-side keyword filter which only narrows the loaded tab.
@@ -410,7 +432,7 @@ function App() {
   useEffect(() => {
     setVisibleCount(PAGE_SIZE)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, eventsStatusFilter, tagFilter, keywordFilter, globalQuery])
+  }, [tab, eventsStatusFilter, tagFilter, keywordFilter, globalQuery, datePreset])
 
   useEffect(() => {
     if (tab === 'insights') {
@@ -521,8 +543,10 @@ function App() {
   // category with only one event is still worth being able to jump to.
   const availableCategories = Array.from(new Set(activeEventList.map((e) => e.category))).sort()
 
-  const displayedEvents = sortEvents(filterEvents(tab === 'saved' ? savedEvents : events, tagFilter, keywordFilter), sortBy)
-  const displayedTimelineEvents = filterEvents(timelineEvents, tagFilter, keywordFilter)
+  const baseDisplayedEvents = sortEvents(filterEvents(tab === 'saved' ? savedEvents : events, tagFilter, keywordFilter), sortBy)
+  const displayedEvents = baseDisplayedEvents.filter((e) => inDatePreset(e, datePreset))
+  const baseTimelineEvents = filterEvents(timelineEvents, tagFilter, keywordFilter)
+  const displayedTimelineEvents = baseTimelineEvents.filter((e) => inDatePreset(e, datePreset))
   // Ongoing+upcoming, high-confidence matches only, best score first --
   // the "what should I actually go to" view. Everything below the
   // threshold is still fully browsable in Ongoing/Upcoming, just not
@@ -618,21 +642,23 @@ function App() {
         <InterestForm profile={profile} onSave={handleSaveInterests} />
 
         <AskBar onOpenEvent={openEventModal} />
+      </div>
 
-        <div>
-          <div className="flex gap-1 border-b border-black/10 dark:border-white/10 mb-4 overflow-x-auto">
+      {/* Sticky controls — stays pinned while scrolling long lists (outside the narrow container so sticky isn't clipped by its parent's bounds) */}
+      <div className="sticky top-0 z-20 bg-white/95 dark:bg-black/95 backdrop-blur supports-[backdrop-filter]:bg-white/80 supports-[backdrop-filter]:dark:bg-black/80 border-y border-black/10 dark:border-white/10">
+        <div className="max-w-3xl mx-auto w-full px-4 py-3 flex flex-col gap-3">
+          <div className="flex gap-1 overflow-x-auto -mb-3 -mx-1 px-1">
             {TABS.map((tabKey) => (
               <button
                 key={tabKey}
                 onClick={() => handleTabClick(tabKey)}
-                className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px whitespace-nowrap ${
+                className={`px-3 py-2.5 text-sm font-medium border-b-2 whitespace-nowrap shrink-0 -mb-px ${
                   tab === tabKey
                     ? 'border-purple-600 text-purple-600 dark:text-purple-400'
                     : 'border-transparent text-black/50 dark:text-white/50'
                 }`}
               >
                 {t(`tab.${tabKey}`)}
-                {/* A3: unseen high-confidence picks since the last visit. */}
                 {tabKey === 'suggestions' && newSuggestionCount > 0 && (
                   <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-purple-600 text-white text-[10px] font-semibold align-middle">
                     {t('tab.newBadge', { n: newSuggestionCount })}
@@ -641,9 +667,12 @@ function App() {
               </button>
             ))}
           </div>
+          {tab === 'suggestions' && (
+            <p className="text-xs text-black/50 dark:text-white/50">{t('suggestions.subtitle')}</p>
+          )}
 
           {tab === 'events' && (
-            <div className="flex flex-wrap items-center gap-2 mb-2">
+            <div className="flex flex-wrap items-center gap-2">
               <div className="inline-flex self-start rounded-md border border-black/10 dark:border-white/10 overflow-hidden text-sm">
                 {EVENT_STATUS_FILTERS.map((status) => (
                   <button
@@ -659,11 +688,6 @@ function App() {
                   </button>
                 ))}
               </div>
-              {/* Score-sort buries anything without a match yet (e.g. a
-                  freshly-added source's events, still waiting their turn for
-                  an LLM rerank) at the bottom of a long list -- date-sort
-                  makes those just as reachable as anything else, without
-                  needing a score at all. */}
               <div className="inline-flex self-start rounded-md border border-black/10 dark:border-white/10 overflow-hidden text-sm">
                 {(['score', 'date'] as SortBy[]).map((s) => (
                   <button
@@ -684,101 +708,117 @@ function App() {
 
           {tab !== 'insights' && tab !== 'disclaimer' && (
             <div className="flex flex-col gap-2">
-              {/* A4: global search -- queries the whole catalog on the
-                  server, unlike the keyword filter below which only
-                  narrows the current tab's already-loaded list. */}
               <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-black/30 dark:text-white/30 text-sm" aria-hidden="true">⌕</span>
                 <input
                   type="search"
                   value={globalQuery}
                   onChange={(e) => setGlobalQuery(e.target.value)}
                   placeholder={t('search.placeholder')}
                   aria-label={t('search.placeholder')}
-                  className="w-full rounded-md border border-black/10 dark:border-white/10 bg-transparent px-3 py-2 pr-8 text-sm"
+                  className="w-full rounded-full border border-black/10 dark:border-white/10 bg-black/[0.03] dark:bg-white/[0.05] pl-9 pr-8 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-300"
                 />
                 {globalQuery && (
                   <button
                     onClick={() => setGlobalQuery('')}
                     aria-label={t('search.clear')}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-black/40 dark:text-white/40 hover:opacity-70"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-black/40 dark:text-white/40 hover:opacity-70"
                   >
                     ×
                   </button>
                 )}
               </div>
 
-              <div className="relative">
-                <input
-                  type="text"
-                  value={keywordFilter}
-                  onChange={(e) => setKeywordFilter(e.target.value)}
-                  placeholder={t('filter.placeholder')}
-                  className="w-full rounded-md border border-black/10 dark:border-white/10 bg-transparent px-3 py-2 pr-8 text-sm"
-                />
-                {keywordFilter && (
-                  <button
-                    onClick={() => setKeywordFilter('')}
-                    aria-label={t('filter.clear')}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-black/40 dark:text-white/40 hover:opacity-70"
-                  >
-                    ×
-                  </button>
-                )}
-              </div>
-
-              {suggestedKeywords.length > 0 && (
-                <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                  <span className="text-black/40 dark:text-white/40">{t('filter.suggestedKeywords')}</span>
-                  {suggestedKeywords.map((term) => (
+              {(() => {
+                const activeCount = (tagFilter ? 1 : 0) + (keywordFilter ? 1 : 0) + (datePreset !== 'all' ? 1 : 0)
+                return (
+                  <>
                     <button
-                      key={term}
-                      onClick={() => handleInterestChipClick(term)}
-                      className={`px-2 py-0.5 rounded-full ${
-                        keywordFilter.toLowerCase() === term.toLowerCase()
-                          ? 'bg-purple-600 text-white'
-                          : 'bg-black/5 dark:bg-white/10 text-black/60 dark:text-white/60 hover:bg-black/10 dark:hover:bg-white/20'
-                      }`}
+                      onClick={() => setFilterOpen((v) => !v)}
+                      aria-expanded={filterOpen}
+                      className="self-start inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10"
                     >
-                      {term}
+                      {t('filter.toggle')} {activeCount > 0 && <span className="px-1.5 py-0.5 rounded-full bg-purple-600 text-white text-[10px]">{activeCount}</span>} <span aria-hidden="true">{filterOpen ? '▴' : '▾'}</span>
                     </button>
-                  ))}
-                </div>
-              )}
+                    {(filterOpen || activeCount > 0) && (
+                      <div className="rounded-lg border border-black/10 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.03] p-3 flex flex-col gap-3">
+                        <div className="relative">
+                          <input
+                            type="text"
+                            value={keywordFilter}
+                            onChange={(e) => setKeywordFilter(e.target.value)}
+                            placeholder={t('filter.placeholder')}
+                            className="w-full rounded-md border border-black/10 dark:border-white/10 bg-white dark:bg-black px-3 py-2 pr-8 text-sm"
+                          />
+                          {keywordFilter && (
+                            <button
+                              onClick={() => setKeywordFilter('')}
+                              aria-label={t('filter.clear')}
+                              className="absolute right-2 top-1/2 -translate-y-1/2 text-black/40 dark:text-white/40 hover:opacity-70"
+                            >
+                              ×
+                            </button>
+                          )}
+                        </div>
 
-              {availableCategories.length > 0 && (
-                <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                  <span className="text-black/40 dark:text-white/40">{t('filter.categories')}</span>
-                  {availableCategories.map((category) => (
-                    <button
-                      key={category}
-                      onClick={() => handleTagClick({ type: 'category', value: category })}
-                      className={`px-2 py-0.5 rounded-full ${
-                        tagFilter?.type === 'category' && tagFilter.value === category
-                          ? 'bg-purple-600 text-white'
-                          : 'bg-black/5 dark:bg-white/10 text-black/60 dark:text-white/60 hover:bg-black/10 dark:hover:bg-white/20'
-                      }`}
-                    >
-                      {category}
-                    </button>
-                  ))}
-                </div>
-              )}
+                        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                          <span className="text-black/40 dark:text-white/40">{t('filter.dateLabel')}</span>
+                          {(['all', 'weekend', '7days', 'month'] as DatePreset[]).map((p) => (
+                            <button
+                              key={p}
+                              onClick={() => setDatePreset(p)}
+                              className={`px-2.5 py-1 rounded-full font-medium ${datePreset === p ? 'bg-purple-600 text-white' : 'bg-white dark:bg-black border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10'}`}
+                            >
+                              {t(`filter.date.${p}`)}
+                            </button>
+                          ))}
+                        </div>
 
-              {tagFilter && (
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="text-black/50 dark:text-white/50">{t('filter.filteringBy')}</span>
-                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-purple-600 text-white">
-                    {tagFilter.value}
-                    <button
-                      onClick={() => setTagFilter(null)}
-                      aria-label={t('filter.clearTag')}
-                      className="hover:opacity-70"
-                    >
-                      ×
-                    </button>
-                  </span>
-                </div>
-              )}
+                        {suggestedKeywords.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                            <span className="text-black/40 dark:text-white/40">{t('filter.suggestedKeywords')}</span>
+                            {suggestedKeywords.map((term) => (
+                              <button
+                                key={term}
+                                onClick={() => handleInterestChipClick(term)}
+                                className={`px-2 py-0.5 rounded-full ${keywordFilter.toLowerCase() === term.toLowerCase() ? 'bg-purple-600 text-white' : 'bg-white dark:bg-black border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10'}`}
+                              >
+                                {term}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
+                        {availableCategories.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                            <span className="text-black/40 dark:text-white/40">{t('filter.categories')}</span>
+                            {availableCategories.map((category) => (
+                              <button
+                                key={category}
+                                onClick={() => handleTagClick({ type: 'category', value: category })}
+                                className={`px-2 py-0.5 rounded-full flex items-center gap-1 ${tagFilter?.type === 'category' && tagFilter.value === category ? 'bg-purple-600 text-white' : 'bg-white dark:bg-black border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10'}`}
+                              >
+                                <span className={`w-2 h-2 rounded-full ${tagFilter?.type === 'category' && tagFilter.value === category ? 'bg-white/80' : 'bg-purple-500/60'}`} aria-hidden="true" />
+                                {category}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
+                        {tagFilter && (
+                          <div className="flex items-center gap-2 text-sm">
+                            <span className="text-black/50 dark:text-white/50">{t('filter.filteringBy')}</span>
+                            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-purple-600 text-white">
+                              {tagFilter.value}
+                              <button onClick={() => setTagFilter(null)} aria-label={t('filter.clearTag')} className="hover:opacity-70">×</button>
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )
+              })()}
             </div>
           )}
         </div>

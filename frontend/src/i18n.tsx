@@ -48,6 +48,12 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     'filter.filteringBy': '篩選條件：',
     'filter.clearTag': '清除篩選',
     'filter.categories': '瀏覽分類：',
+    'filter.toggle': '篩選',
+    'filter.dateLabel': '日期：',
+    'filter.date.all': '全部',
+    'filter.date.weekend': '今個週末',
+    'filter.date.7days': '未來 7 天',
+    'filter.date.month': '今個月',
 
     'search.placeholder': '搜尋全部活動…',
     'search.clear': '清除搜尋',
@@ -64,6 +70,7 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     'sort.score': '配對分數',
     'sort.date': '日期',
 
+    'suggestions.subtitle': '根據你的興趣挑選的高配對活動 — 全部活動仍可在「活動」分頁瀏覽。',
     'empty.noMatch': '沒有符合篩選條件的活動。',
     'empty.noEvents': '暫無活動 — 請在上方設定你的興趣並按重新整理。',
     'empty.noSaved': '尚未收藏任何活動 — 按活動卡片右上角的 📑 即可收藏。',
@@ -77,6 +84,7 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     'event.matchedOn': '配對依據：',
     'event.match': '配對分數 {score}',
     'event.viewSource': '查看來源 →',
+    'event.readMore': '查看詳情 →',
     'event.addToCalendar': '加入日曆',
     'event.addToCalendarIcs': '下載 .ics（Outlook / Apple 日曆用）',
     'event.save': '收藏',
@@ -225,6 +233,12 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     'filter.suggestedKeywords': 'Suggested keywords:',
     'filter.filteringBy': 'Filtering by',
     'filter.clearTag': 'Clear filter',
+    'filter.toggle': 'Filters',
+    'filter.dateLabel': 'Date:',
+    'filter.date.all': 'All',
+    'filter.date.weekend': 'This weekend',
+    'filter.date.7days': 'Next 7 days',
+    'filter.date.month': 'This month',
 
     'search.placeholder': 'Search all events…',
     'search.clear': 'Clear search',
@@ -238,6 +252,7 @@ const STRINGS: Record<Lang, Record<string, string>> = {
 
     'tab.newBadge': '+{n} new',
 
+    'suggestions.subtitle': 'Top matches from your interests — everything is still browsable under Events.',
     'empty.noMatch': 'No events match your filter.',
     'empty.noEvents': 'No events yet — set your interests above and hit Refresh.',
     'empty.noSaved': "Nothing saved yet — tap 📑 in an event card's top corner to save it.",
@@ -251,6 +266,7 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     'event.matchedOn': 'Matched on:',
     'event.match': 'Match score {score}',
     'event.viewSource': 'View source →',
+    'event.readMore': 'Details →',
     'event.addToCalendar': 'Add to calendar',
     'event.addToCalendarIcs': 'Download .ics (Outlook / Apple Calendar)',
     'event.save': 'Save',

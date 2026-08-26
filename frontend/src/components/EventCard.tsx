@@ -37,12 +37,12 @@ export function EventArt({ event, category }: { event: EventItem; category: stri
         alt=""
         loading="lazy"
         onError={() => setBroken(true)}
-        className="h-32 w-full object-cover"
+        className="aspect-[16/9] w-full object-cover"
       />
     )
   }
   return (
-    <div className={`h-32 w-full bg-gradient-to-br ${categoryGradient(category)} flex items-end p-3`}>
+    <div className={`aspect-[16/9] w-full bg-gradient-to-br ${categoryGradient(category)} flex items-end p-3`}>
       <svg width="30" height="30" viewBox="0 0 34 34" fill="none" className="opacity-80" aria-hidden="true">
         <rect x="4" y="14" width="4" height="16" fill="#fff" fillOpacity="0.55" />
         <rect x="11" y="8" width="4" height="22" fill="#fff" fillOpacity="0.75" />
@@ -231,16 +231,29 @@ export default function EventCard({
         </div>
       </div>
 
-      {showDescription && event.description && (
+      {showDescription && event.description ? (
         <p className="text-sm text-black/70 dark:text-white/70 whitespace-pre-line">{event.description}</p>
+      ) : (
+        event.description && (
+          <p className="text-sm text-black/60 dark:text-white/60 line-clamp-2 leading-snug">
+            {event.description}{' '}
+            {onOpenDetail && (
+              <button onClick={() => onOpenDetail(event)} className="text-purple-600 dark:text-purple-400 hover:underline text-xs font-medium">
+                {t('event.readMore')}
+              </button>
+            )}
+          </p>
+        )
       )}
 
       <div className="flex items-center gap-2 flex-wrap text-xs">
-        <Tag
-          label={category}
-          active={activeFilter?.type === 'category' && activeFilter.value === event.category}
+        <button
           onClick={() => onTagClick({ type: 'category', value: event.category })}
-        />
+          className={`px-2 py-0.5 rounded-full flex items-center gap-1 transition-colors ${activeFilter?.type === 'category' && activeFilter.value === event.category ? 'bg-purple-600 text-white' : 'bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/20'}`}
+        >
+          <span className="w-2 h-2 rounded-full bg-purple-500/70" aria-hidden="true" />
+          {category}
+        </button>
         <Tag
           label={event.source}
           active={activeFilter?.type === 'source' && activeFilter.value === event.source}

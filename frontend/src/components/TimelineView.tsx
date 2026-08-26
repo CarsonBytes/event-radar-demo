@@ -78,6 +78,14 @@ export default function TimelineView({
   const { lang, t } = useLanguage()
   const [groupBy, setGroupBy] = useState<GroupBy>('score')
   const [showUnscored, setShowUnscored] = useState(false)
+  const [isMobile, setIsMobile] = useState(false)
+  useEffect(() => {
+    const m = window.matchMedia('(max-width: 768px)')
+    const onChange = () => setIsMobile(m.matches)
+    onChange()
+    m.addEventListener('change', onChange)
+    return () => m.removeEventListener('change', onChange)
+  }, [])
 
   const ganttable = useMemo(
     () => events.filter((e) => daysBetween(parseUtc(e.start), parseUtc(e.end || e.start)) <= MAX_SPAN_DAYS),
@@ -159,6 +167,58 @@ export default function TimelineView({
 
   if (ganttable.length === 0) {
     return <p className="text-sm text-black/50 dark:text-white/50">{t('timeline.noEvents')}</p>
+  }
+
+  // Mobile: vertical agenda grouped by week — Gantt is unreadable on narrow screens
+  if (isMobile) {
+    const visible = showUnscored ? ganttable : ganttable.filter((e) => e.llm_score !== null)
+    const sorted = [...visible].sort((a, b) => parseUtc(a.start).getTime() - parseUtc(b.start).getTime())
+    const weeks = new Map<string, EventItem[]>()
+    for (const ev of sorted) {
+      const d = startOfDay(parseUtc(ev.start))
+      const label = d.toLocaleDateString(DATE_LOCALE[lang], { timeZone: HKT_TIMEZONE, month: 'short', day: 'numeric' })
+      const key = `${d.getTime()}-${label}`
+      if (!weeks.has(key)) weeks.set(key, [])
+      weeks.get(key)!.push(ev)
+    }
+    return (
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-2 flex-wrap text-xs">
+          <span className="text-black/40 dark:text-white/40">{t('filter.dateLabel')}</span>
+          {unscoredCount > 0 && (
+            <label className="flex items-center gap-1.5 text-black/50 dark:text-white/50 ml-auto">
+              <input type="checkbox" checked={showUnscored} onChange={(e) => setShowUnscored(e.target.checked)} />
+              {t('timeline.showUnscored', { n: unscoredCount })}
+            </label>
+          )}
+        </div>
+        {Array.from(weeks.entries()).map(([key, evs]) => {
+          const label = key.split('-').slice(1).join('-')
+          return (
+            <div key={key} className="rounded-lg border border-black/10 dark:border-white/10 overflow-hidden">
+              <div className="px-3 py-1.5 bg-black/[0.03] dark:bg-white/[0.05] text-xs font-medium text-black/60 dark:text-white/60">Week of {label}</div>
+              <div className="divide-y divide-black/5 dark:divide-white/10">
+                {evs.map((ev) => {
+                  const title = (lang === 'zh-Hant' && ev.title_native) || ev.title
+                  return (
+                    <button
+                      key={ev.id}
+                      onClick={() => onEventClick(ev)}
+                      className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-black/[0.02] dark:hover:bg-white/[0.04]"
+                    >
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${barColor(ev.llm_score)}`} aria-hidden="true" />
+                      <span className="flex-1 min-w-0 truncate text-sm">{title}</span>
+                      {ev.llm_score !== null && <span className="text-xs text-black/40 dark:text-white/40">{Math.round(ev.llm_score)}</span>}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })}
+        {longRunningCount > 0 && <p className="text-xs text-black/40 dark:text-white/40">{t('timeline.longRunning', { n: longRunningCount })}</p>}
+      </div>
+    )
   }
 
   return (
