@@ -646,13 +646,13 @@ function App() {
 
       {/* Sticky controls — stays pinned while scrolling long lists (outside the narrow container so sticky isn't clipped by its parent's bounds) */}
       <div className="sticky top-0 z-20 bg-white/95 dark:bg-black/95 backdrop-blur supports-[backdrop-filter]:bg-white/80 supports-[backdrop-filter]:dark:bg-black/80 border-y border-black/10 dark:border-white/10">
-        <div className="max-w-3xl mx-auto w-full px-4 py-3 flex flex-col gap-3">
-          <div className="flex gap-1 overflow-x-auto -mb-3 -mx-1 px-1">
+        <div className="max-w-3xl mx-auto w-full px-4 py-2 flex flex-col gap-2">
+          <div className="flex gap-1 overflow-x-auto overflow-y-hidden -mb-2 -mx-1 px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {TABS.map((tabKey) => (
               <button
                 key={tabKey}
                 onClick={() => handleTabClick(tabKey)}
-                className={`px-3 py-2.5 text-sm font-medium border-b-2 whitespace-nowrap shrink-0 -mb-px ${
+                className={`px-3 py-2 text-sm font-medium border-b-2 whitespace-nowrap shrink-0 -mb-px ${
                   tab === tabKey
                     ? 'border-purple-600 text-purple-600 dark:text-purple-400'
                     : 'border-transparent text-black/50 dark:text-white/50'
@@ -708,38 +708,39 @@ function App() {
 
           {tab !== 'insights' && tab !== 'disclaimer' && (
             <div className="flex flex-col gap-2">
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-black/30 dark:text-white/30 text-sm" aria-hidden="true">⌕</span>
-                <input
-                  type="search"
-                  value={globalQuery}
-                  onChange={(e) => setGlobalQuery(e.target.value)}
-                  placeholder={t('search.placeholder')}
-                  aria-label={t('search.placeholder')}
-                  className="w-full rounded-full border border-black/10 dark:border-white/10 bg-black/[0.03] dark:bg-white/[0.05] pl-9 pr-8 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-300"
-                />
-                {globalQuery && (
-                  <button
-                    onClick={() => setGlobalQuery('')}
-                    aria-label={t('search.clear')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-black/40 dark:text-white/40 hover:opacity-70"
-                  >
-                    ×
-                  </button>
-                )}
-              </div>
-
               {(() => {
                 const activeCount = (tagFilter ? 1 : 0) + (keywordFilter ? 1 : 0) + (datePreset !== 'all' ? 1 : 0)
                 return (
                   <>
-                    <button
-                      onClick={() => setFilterOpen((v) => !v)}
-                      aria-expanded={filterOpen}
-                      className="self-start inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10"
-                    >
-                      {t('filter.toggle')} {activeCount > 0 && <span className="px-1.5 py-0.5 rounded-full bg-purple-600 text-white text-[10px]">{activeCount}</span>} <span aria-hidden="true">{filterOpen ? '▴' : '▾'}</span>
-                    </button>
+                    <div className="flex gap-2 items-center">
+                      <div className="relative flex-1 max-w-[320px]">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-black/30 dark:text-white/30 text-sm" aria-hidden="true">⌕</span>
+                        <input
+                          type="search"
+                          value={globalQuery}
+                          onChange={(e) => setGlobalQuery(e.target.value)}
+                          placeholder={t('search.placeholder')}
+                          aria-label={t('search.placeholder')}
+                          className="w-full rounded-full border border-black/10 dark:border-white/10 bg-black/[0.03] dark:bg-white/[0.05] pl-9 pr-8 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-300"
+                        />
+                        {globalQuery && (
+                          <button
+                            onClick={() => setGlobalQuery('')}
+                            aria-label={t('search.clear')}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-black/40 dark:text-white/40 hover:opacity-70"
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => setFilterOpen((v) => !v)}
+                        aria-expanded={filterOpen}
+                        className="shrink-0 inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-full border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10"
+                      >
+                        {t('filter.toggle')} {activeCount > 0 && <span className="px-1.5 py-0.5 rounded-full bg-purple-600 text-white text-[10px]">{activeCount}</span>} <span aria-hidden="true">{filterOpen ? '▴' : '▾'}</span>
+                      </button>
+                    </div>
                     {(filterOpen || activeCount > 0) && (
                       <div className="rounded-lg border border-black/10 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.03] p-3 flex flex-col gap-3">
                         <div className="relative">
