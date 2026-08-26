@@ -667,9 +667,6 @@ function App() {
               </button>
             ))}
           </div>
-          {tab === 'suggestions' && (
-            <p className="text-xs text-black/50 dark:text-white/50">{t('suggestions.subtitle')}</p>
-          )}
 
           {tab === 'events' && (
             <div className="flex flex-wrap items-center gap-2">
