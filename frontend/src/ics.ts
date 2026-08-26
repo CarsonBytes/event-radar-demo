@@ -30,39 +30,51 @@ function calendarDateRange(event: EventItem): { allDay: boolean; start: Date; en
   return { allDay: false, start, end: end ?? new Date(start.getTime() + 60 * 60 * 1000) }
 }
 
-export function downloadIcs(event: EventItem, title: string, location: string): void {
-  const { allDay, start, end } = calendarDateRange(event)
+// Builds one VCALENDAR containing every event given -- shared by the
+// single-event export and the Saved-tab "export all" so both stay
+// RFC-5545-identical.
+function buildIcsCalendar(entries: { event: EventItem; title: string; location: string }[]): string {
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Event Radar//EN', 'CALSCALE:GREGORIAN']
+  for (const { event, title, location } of entries) {
+    const { allDay, start, end } = calendarDateRange(event)
+    lines.push(
+      'BEGIN:VEVENT',
+      `UID:${event.source}-${event.id}@event-radar`,
+      `DTSTAMP:${icsDateTime(new Date())}`,
+      allDay ? `DTSTART;VALUE=DATE:${hktDateDigits(start)}` : `DTSTART:${icsDateTime(start)}`,
+      allDay ? `DTEND;VALUE=DATE:${hktDateDigits(end)}` : `DTEND:${icsDateTime(end)}`,
+      `SUMMARY:${escapeIcsText(title)}`,
+    )
+    if (location) lines.push(`LOCATION:${escapeIcsText(location)}`)
+    if (event.description) lines.push(`DESCRIPTION:${escapeIcsText(event.description)}`)
+    if (event.source_url) lines.push(`URL:${event.source_url}`)
+    lines.push('END:VEVENT')
+  }
+  lines.push('END:VCALENDAR')
+  return lines.join('\r\n')
+}
 
-  const dtstartLine = allDay ? `DTSTART;VALUE=DATE:${hktDateDigits(start)}` : `DTSTART:${icsDateTime(start)}`
-  const dtendLine = allDay ? `DTEND;VALUE=DATE:${hktDateDigits(end)}` : `DTEND:${icsDateTime(end)}`
-
-  const lines = [
-    'BEGIN:VCALENDAR',
-    'VERSION:2.0',
-    'PRODID:-//Event Radar//EN',
-    'CALSCALE:GREGORIAN',
-    'BEGIN:VEVENT',
-    `UID:${event.source}-${event.id}@event-radar`,
-    `DTSTAMP:${icsDateTime(new Date())}`,
-    dtstartLine,
-    dtendLine,
-    `SUMMARY:${escapeIcsText(title)}`,
-    location && `LOCATION:${escapeIcsText(location)}`,
-    event.description && `DESCRIPTION:${escapeIcsText(event.description)}`,
-    event.source_url && `URL:${event.source_url}`,
-    'END:VEVENT',
-    'END:VCALENDAR',
-  ].filter((line): line is string => Boolean(line))
-
-  const blob = new Blob([lines.join('\r\n')], { type: 'text/calendar;charset=utf-8' })
+function downloadText(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `${event.source}-${event.id}.ics`
+  a.download = filename
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
+}
+
+export function downloadIcs(event: EventItem, title: string, location: string): void {
+  const text = buildIcsCalendar([{ event, title, location }])
+  downloadText(new Blob([text], { type: 'text/calendar;charset=utf-8' }), `${event.source}-${event.id}.ics`)
+}
+
+// One .ics covering everything saved -- imports into Outlook/Apple Calendar
+// as a batch instead of N separate downloads.
+export function downloadIcsMultiple(entries: { event: EventItem; title: string; location: string }[], filename: string): void {
+  const text = buildIcsCalendar(entries)
+  downloadText(new Blob([text], { type: 'text/calendar;charset=utf-8' }), filename)
 }
 
 // Google's "quick add" URL -- opens Calendar pre-filled with the event, one

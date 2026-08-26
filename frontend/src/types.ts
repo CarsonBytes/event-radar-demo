@@ -23,6 +23,7 @@ export interface EventItem {
   llm_score: number | null
   why_match: string
   status: EventStatus
+  created_at: string
   user_signal: 'up' | 'down' | null
   saved: boolean
 }

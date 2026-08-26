@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useLanguage } from '../i18n'
 import type { EventItem, InterestProfile } from '../types'
 import EventCard from './EventCard'
@@ -29,10 +29,46 @@ export default function EventDetailModal({
   onClose: () => void
 }) {
   const { t } = useLanguage()
+  const dialogRef = useRef<HTMLDivElement>(null)
+  // Restores focus to whichever element opened the modal on close --
+  // keyboard users otherwise land back at <body> and lose their place.
+  const previouslyFocused = useRef<HTMLElement | null>(null)
+
+  useEffect(() => {
+    previouslyFocused.current = document.activeElement as HTMLElement | null
+    // Focus the dialog itself so Tab starts inside it.
+    dialogRef.current?.focus()
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = prevOverflow
+      previouslyFocused.current?.focus?.()
+    }
+  }, [])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        onClose()
+        return
+      }
+      // Minimal focus trap -- Tab / Shift+Tab cycle within the dialog
+      // instead of escaping into the page behind the overlay.
+      if (e.key !== 'Tab' || !dialogRef.current) return
+      const focusables = dialogRef.current.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      )
+      if (focusables.length === 0) return
+      const first = focusables[0]
+      const last = focusables[focusables.length - 1]
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault()
+        first.focus()
+      }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
@@ -43,7 +79,15 @@ export default function EventDetailModal({
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 pt-12"
       onClick={onClose}
     >
-      <div className="w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={event?.title ?? t('loading')}
+        tabIndex={-1}
+        className="w-full max-w-lg outline-none"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex justify-end mb-2">
           <button
             onClick={onClose}
@@ -70,6 +114,7 @@ export default function EventDetailModal({
               onToggleSave={onToggleSave}
               activeFilter={null}
               onTagClick={() => {}}
+              showDescription
             />
           </div>
         )}

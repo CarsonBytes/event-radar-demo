@@ -67,6 +67,16 @@ export const TIER_STYLES: Record<MatchTier, string> = {
   low: 'bg-black/5 text-black/50 dark:bg-white/10 dark:text-white/50',
 }
 
+// Solid strip colors matching each match tier -- a thin bar between the
+// art and the card body, so score-sorted lists are scannable by color at
+// a glance without reading any badge text.
+const TIER_ACCENTS: Record<MatchTier | 'unscored', string> = {
+  high: 'bg-[#14795C]',
+  mid: 'bg-[#E3A75B]',
+  low: 'bg-black/20 dark:bg-white/25',
+  unscored: 'bg-black/10 dark:bg-white/10',
+}
+
 function Tag({
   label,
   active,
@@ -97,6 +107,8 @@ export default function EventCard({
   onToggleSave,
   activeFilter,
   onTagClick,
+  showDescription = false,
+  onOpenDetail,
 }: {
   event: EventItem
   profile: InterestProfile | null
@@ -104,6 +116,22 @@ export default function EventCard({
   onToggleSave: (id: number, saved: boolean) => void
   activeFilter: TagFilter | null
   onTagClick: (filter: TagFilter) => void
+  // Off by default -- every scrolling list (Events, Suggestions, Saved)
+  // renders this same component, and a full synopsis on every compact
+  // card would make those lists much harder to scan. description itself
+  // was already being fetched/stored (used for keyword search and .ics
+  // export) but had no visible place in the UI at all until this --
+  // EventDetailModal is the one call site that opts in.
+  showDescription?: boolean
+  // Optional: before this, EventDetailModal was only ever reachable from
+  // Timeline bars or an Ask-box reference -- a card in a plain scrolling
+  // list had no way to open it at all, which meant showDescription's
+  // "modal only" home would otherwise be unreachable from the exact place
+  // (Events/Suggestions/Saved) someone's actually looking at a card.
+  // Omitted (rather than always wired) so EventDetailModal's own
+  // re-render of this same component doesn't get a click target on its
+  // already-open card.
+  onOpenDetail?: (event: EventItem) => void
 }) {
   const { lang, t } = useLanguage()
   const [showDetails, setShowDetails] = useState(false)
@@ -140,6 +168,7 @@ export default function EventCard({
   return (
     <div className="rounded-lg border border-black/10 dark:border-white/10 overflow-hidden flex flex-col">
       <EventArt event={event} category={category} />
+      <div className={`h-1 w-full shrink-0 ${TIER_ACCENTS[event.llm_score !== null ? matchTier(event.llm_score) : 'unscored']}`} />
       <div className="p-4 flex flex-col gap-2">
       {startingSoon && (
         <div className="flex items-center gap-1.5 -mt-1 px-2 py-1 rounded-md bg-amber-500/10 text-amber-700 dark:text-amber-400 text-xs font-medium">
@@ -150,7 +179,13 @@ export default function EventCard({
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="font-semibold text-base leading-snug flex items-center gap-1.5">
-            {primaryTitle}
+            {onOpenDetail ? (
+              <button onClick={() => onOpenDetail(event)} className="text-left hover:underline">
+                {primaryTitle}
+              </button>
+            ) : (
+              primaryTitle
+            )}
             {event.native_lang && (
               <span className="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded bg-black/10 dark:bg-white/15 text-black/60 dark:text-white/60">
                 {preferNative ? langBadge(event.native_lang) : 'EN'}
@@ -195,6 +230,10 @@ export default function EventCard({
           </button>
         </div>
       </div>
+
+      {showDescription && event.description && (
+        <p className="text-sm text-black/70 dark:text-white/70 whitespace-pre-line">{event.description}</p>
+      )}
 
       <div className="flex items-center gap-2 flex-wrap text-xs">
         <Tag

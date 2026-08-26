@@ -16,6 +16,7 @@ export default function SuggestionsView({
   activeFilter,
   onTagClick,
   emptyMessage,
+  onOpenDetail,
 }: {
   events: EventItem[]
   profile: InterestProfile | null
@@ -24,6 +25,7 @@ export default function SuggestionsView({
   activeFilter: TagFilter | null
   onTagClick: (filter: TagFilter) => void
   emptyMessage: string
+  onOpenDetail?: (event: EventItem) => void
 }) {
   const { t } = useLanguage()
   const [mode, setMode] = useState<'list' | 'swipe'>('list')
@@ -70,6 +72,7 @@ export default function SuggestionsView({
               onToggleSave={onToggleSave}
               activeFilter={activeFilter}
               onTagClick={onTagClick}
+              onOpenDetail={onOpenDetail}
             />
           ))}
         </div>

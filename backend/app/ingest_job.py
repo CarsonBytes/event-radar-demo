@@ -34,7 +34,7 @@ from app.venue_llm import extract_venues
 # always true wherever those modules are genuinely absent, so this branch
 # is never taken there.
 if not DEMO_MODE:
-    from app.connectors import art_mate, eventbrite, expo_king, hktdc, predicthq, ticketmaster
+    from app.connectors import art_mate, broadway_cinema, eventbrite, expo_king, hktdc, predicthq, ticketmaster
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,25 @@ _VENUE_FETCH_HEADERS = {
 # interest-save and a Refresh click seconds apart don't race each other or
 # double-spend LLM calls on the same work.
 _rerank_lock = threading.Lock()
+
+# Serializes whole ingest runs (fetch + upsert) against each other. SQLite
+# allows only one writer at a time, so a manual POST /api/ingest landing
+# while the scheduled run was still mid-flight (e.g. art_mate's slow
+# per-event venue backfill) used to surface as
+# sqlite3.OperationalError: database is locked -- hit for real in live use.
+# Both entry points (the scheduled job here, the HTTP handler in
+# routers/ingest.py) acquire this non-blocking first; a second concurrent
+# run is skipped/rejected rather than queued, since a queued run would just
+# redo an ingest that finished moments earlier anyway.
+_ingest_lock = threading.Lock()
+
+
+def try_begin_ingest() -> bool:
+    return _ingest_lock.acquire(blocking=False)
+
+
+def end_ingest() -> None:
+    _ingest_lock.release()
 
 
 @dataclasses.dataclass
@@ -109,7 +128,7 @@ def _set_rerank_status(**kwargs) -> None:
 def _build_connectors(demo_mode: bool) -> list:
     if demo_mode:
         return [urbtix]
-    return [urbtix, hktdc, ticketmaster, predicthq, eventbrite, art_mate, expo_king]
+    return [urbtix, hktdc, ticketmaster, predicthq, eventbrite, art_mate, expo_king, broadway_cinema]
 
 
 CONNECTORS = _build_connectors(DEMO_MODE)
@@ -716,7 +735,17 @@ def run_ingest(db: Session, trigger: str = "scheduled") -> IngestSummary:
 
 def run_ingest_job() -> None:
     """Entry point for the background scheduler — owns its own DB session
-    since it doesn't run inside a request."""
+    since it doesn't run inside a request. Skips entirely (with a log line,
+    not an error) if another ingest -- e.g. a manual Refresh click -- is
+    still running; the scheduled run would only redo that one's work."""
+    if not try_begin_ingest():
+        logger.info("scheduled ingest skipped: another ingest is already running")
+        db = SessionLocal()
+        try:
+            log_event(db, "ingest", "scheduled ingest skipped -- another ingest is already in progress", level="warning")
+        finally:
+            db.close()
+        return
     db = SessionLocal()
     try:
         summary = run_ingest(db, trigger="scheduled")
@@ -726,6 +755,7 @@ def run_ingest_job() -> None:
         log_event(db, "ingest", "scheduled ingest failed", level="error")
     finally:
         db.close()
+        end_ingest()
 
 
 _MAX_CATCHUP_PASSES = 2  # bounds a burst of rapid interest edits, doesn't chase forever

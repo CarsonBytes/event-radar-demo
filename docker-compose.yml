@@ -5,6 +5,8 @@ services:
     restart: always
     ports:
       - "8000:8000"
+    environment:
+      - DEMO_MODE=1
     env_file:
       - backend/.env
     volumes:

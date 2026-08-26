@@ -46,6 +46,9 @@ export const listEvents = (status?: EventStatus) =>
 
 export const getEvent = (event_id: number) => request<EventItem>(`/events/${event_id}`)
 
+export const searchEvents = (q: string) =>
+  request<EventItem[]>(`/events/search?q=${encodeURIComponent(q)}`)
+
 export const submitFeedback = (event_id: number, signal: 'up' | 'down' | 'none') =>
   request<{ ok: boolean }>('/feedback', {
     method: 'POST',

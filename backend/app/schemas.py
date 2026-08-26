@@ -24,6 +24,9 @@ class EventOut(BaseModel):
     llm_score: float | None
     why_match: str
     status: str
+    # When this row first entered the catalog -- powers the frontend's
+    # "new since your last visit" badge (client-side, localStorage-based).
+    created_at: dt.datetime
     user_signal: str | None = None
     saved: bool = False
 

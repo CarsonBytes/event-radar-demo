@@ -47,6 +47,22 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     'filter.suggestedKeywords': '建議關鍵字：',
     'filter.filteringBy': '篩選條件：',
     'filter.clearTag': '清除篩選',
+    'filter.categories': '瀏覽分類：',
+
+    'search.placeholder': '搜尋全部活動…',
+    'search.clear': '清除搜尋',
+    'search.resultsCount': '找到 {n} 個符合「{q}」的活動（搜尋整個目錄）',
+    'search.noResults': '整個目錄都沒有符合「{q}」的活動。',
+    'search.minChars': '請輸入至少兩個字元。',
+
+    'list.loadMore': '顯示更多（還有 {n} 個）',
+
+    'saved.exportAll': '匯出全部 (.ics)',
+
+    'tab.newBadge': '+{n} 新',
+
+    'sort.score': '配對分數',
+    'sort.date': '日期',
 
     'empty.noMatch': '沒有符合篩選條件的活動。',
     'empty.noEvents': '暫無活動 — 請在上方設定你的興趣並按重新整理。',
@@ -209,6 +225,18 @@ const STRINGS: Record<Lang, Record<string, string>> = {
     'filter.suggestedKeywords': 'Suggested keywords:',
     'filter.filteringBy': 'Filtering by',
     'filter.clearTag': 'Clear filter',
+
+    'search.placeholder': 'Search all events…',
+    'search.clear': 'Clear search',
+    'search.resultsCount': '{n} matches for "{q}" (searching the whole catalog)',
+    'search.noResults': 'No events in the whole catalog match "{q}".',
+    'search.minChars': 'Type at least two characters.',
+
+    'list.loadMore': 'Load more ({n} more)',
+
+    'saved.exportAll': 'Export all (.ics)',
+
+    'tab.newBadge': '+{n} new',
 
     'empty.noMatch': 'No events match your filter.',
     'empty.noEvents': 'No events yet — set your interests above and hit Refresh.',

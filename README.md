@@ -15,6 +15,10 @@ This is the public demo build of a larger personal project. It's deliberately sc
 - **A personalization loop that actually closes.** Thumbs up/down on an event nudges category/keyword weights in your interest profile, which feed back into ranking on the next refresh.
 - **Deterministic extraction first, an LLM only where structure genuinely runs out.** Where a source page embeds structured data, it's parsed directly — free, instant, no model judgment needed. An LLM fallback only kicks in for genuinely unstructured free text, and is deliberately scoped (a short excerpt, not a full page) to control both cost and hallucination risk.
 - **Observability on the AI layer itself.** Every LLM call logs tokens/latency/estimated cost; every ingest run logs fetch/new/updated counts. Surfaced in-app, not buried in logs.
+- **Global search across the whole catalog, with zero LLM cost.** A server-side `LIKE` search over title/description/category/venue (English and Chinese) via `GET /api/events/search` — instant, and deliberately not an LLM call.
+- **Deep-linkable views.** Tab, status filter, sort, tag filter, and even an open event-detail modal all live in the URL hash (`#/events/upcoming?sort=date&event=42`), so any view is bookmarkable/shareable and the browser's Back button closes the modal instead of leaving the site.
+- **A "new since your last visit" loop.** High-confidence suggestions added since your last visit are badged on the Suggestions tab — client-side only, no accounts or infrastructure.
+- **Practical list UX at catalog scale.** Long card lists render in chunks ("Load more"), loading states are layout-matched skeletons instead of text, the detail modal is fully keyboard-accessible (focus trap, Escape, focus restore), saved events export to calendar as one batched `.ics`, and ingest runs are serialized so a manual refresh can never collide with the scheduled one.
 
 ## Data source & license
 

@@ -8,6 +8,7 @@ import {
   listSaved,
   runIngest,
   saveEvent,
+  searchEvents,
   setInterests,
   submitFeedback,
   unsaveEvent,
@@ -20,14 +21,17 @@ import Footer from './components/Footer'
 import InsightsPanel from './components/InsightsPanel'
 import InterestForm from './components/InterestForm'
 import RerankStatusBar from './components/RerankStatusBar'
+import SkeletonCard from './components/SkeletonCard'
 import SuggestionsView from './components/SuggestionsView'
 import TimelineView from './components/TimelineView'
 import { countKeywordMatches, filterEvents } from './filterEvents'
+import { downloadIcsMultiple } from './ics'
 import { canonicalKey } from './keywordMatch'
 import { useLanguage, type Lang } from './i18n'
 import type { DebugStatus, EventItem, EventStatus, Insights, InterestProfile, TagFilter } from './types'
 
 type Tab = 'suggestions' | 'events' | 'timeline' | 'saved' | 'insights' | 'disclaimer'
+type SortBy = 'score' | 'date'
 // Suggestions leads -- "what should I actually go to" is the question a
 // returning user has, ahead of browsing everything ongoing/upcoming/past.
 // Ongoing/Upcoming/Past used to be three separate top-level tabs, but
@@ -39,6 +43,75 @@ type Tab = 'suggestions' | 'events' | 'timeline' | 'saved' | 'insights' | 'discl
 // force wrapping/scrolling on its own.
 const TABS: Tab[] = ['suggestions', 'events', 'timeline', 'saved', 'insights', 'disclaimer']
 const EVENT_STATUS_FILTERS: EventStatus[] = ['ongoing', 'upcoming', 'far_future', 'past']
+const TAB_SET: Set<string> = new Set(TABS)
+
+// B1 -- hash routing. Tab / status filter / sort / tag filter / open-modal
+// event id all live in the URL, so a view is bookmarkable/shareable and
+// the browser's Back/Forward buttons work across tab changes and modal
+// opens instead of leaving the site. Hash-based (not the History API's
+// path mode) so it needs zero server-side fallback config.
+type ParsedRoute = {
+  tab?: Tab
+  status?: EventStatus
+  sort?: SortBy
+  tagType?: 'category' | 'source'
+  tagValue?: string
+  eventId?: number
+}
+
+function parseHash(): ParsedRoute {
+  if (typeof window === 'undefined') return {}
+  const raw = window.location.hash.replace(/^#\/?/, '')
+  if (!raw) return {}
+  const [pathPart, queryPart] = raw.split('?')
+  const segments = pathPart.split('/').filter(Boolean)
+  const params = new URLSearchParams(queryPart ?? '')
+  const out: ParsedRoute = {}
+  const first = segments[0]
+  if (first && TAB_SET.has(first)) out.tab = first as Tab
+  if (first === 'events') {
+    const status = segments[1] as EventStatus | undefined
+    if (status && EVENT_STATUS_FILTERS.includes(status)) out.status = status
+  }
+  const sort = params.get('sort')
+  if (sort === 'score' || sort === 'date') out.sort = sort
+  const tag = params.get('tag')
+  if (tag) {
+    const idx = tag.indexOf(':')
+    const type = idx === -1 ? '' : tag.slice(0, idx)
+    const value = idx === -1 ? '' : decodeURIComponent(tag.slice(idx + 1))
+    if ((type === 'category' || type === 'source') && value) {
+      out.tagType = type
+      out.tagValue = value
+    }
+  }
+  const eventParam = params.get('event')
+  if (eventParam && /^\d+$/.test(eventParam)) out.eventId = Number(eventParam)
+  return out
+}
+
+function buildHash(
+  tab: Tab,
+  status: EventStatus,
+  sortBy: SortBy,
+  tagFilter: TagFilter | null,
+  eventId: number | null,
+): string {
+  let path = `/${tab}`
+  if (tab === 'events') path += `/${status}`
+  const params = new URLSearchParams()
+  if (tab === 'events' && sortBy !== 'score') params.set('sort', sortBy)
+  if (tagFilter) params.set('tag', `${tagFilter.type}:${encodeURIComponent(tagFilter.value)}`)
+  if (eventId != null) params.set('event', String(eventId))
+  const qs = params.toString()
+  return `#${path}${qs ? `?${qs}` : ''}`
+}
+
+function applyHash(hash: string, mode: 'replace' | 'push'): void {
+  if (window.location.hash === hash) return
+  if (mode === 'push') window.history.pushState(null, '', hash)
+  else window.history.replaceState(null, '', hash)
+}
 
 // Below this, a "match" isn't confident enough to call out as a
 // suggestion -- every event still gets a full listing in its own
@@ -60,18 +133,58 @@ function dedupeTerms(terms: string[]): string[] {
   return Array.from(seen.values())
 }
 
+// 'score' matches the order the backend already returns (highest match
+// first, unscored last) -- made explicit here rather than left implicit,
+// since 'date' needs an actual client-side sort and the two need to be
+// interchangeable from the same list. Nulls sort last in both directions:
+// an unscored event has no meaningful "match" to rank by, so it belongs
+// at the bottom of a score-sorted list the same way it would if the
+// backend's own ordering were left untouched.
+function sortEvents(events: EventItem[], sortBy: SortBy): EventItem[] {
+  const sorted = [...events]
+  if (sortBy === 'date') {
+    sorted.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
+  } else {
+    sorted.sort((a, b) => (b.llm_score ?? -1) - (a.llm_score ?? -1))
+  }
+  return sorted
+}
+
 function App() {
   const { lang, setLang, t } = useLanguage()
+  // B1: cold-load state is seeded from the URL hash, so a deep link like
+  // #/events/upcoming?sort=date&event=42 restores exactly that view.
+  const [initialRoute] = useState(parseHash)
   const [profile, setProfile] = useState<InterestProfile | null>(null)
-  const [tab, setTab] = useState<Tab>('suggestions')
-  const [eventsStatusFilter, setEventsStatusFilter] = useState<EventStatus>('ongoing')
+  const [tab, setTab] = useState<Tab>(initialRoute.tab ?? 'suggestions')
+  const [eventsStatusFilter, setEventsStatusFilter] = useState<EventStatus>(initialRoute.status ?? 'ongoing')
+  const [sortBy, setSortBy] = useState<SortBy>(initialRoute.sort ?? 'score')
   const [events, setEvents] = useState<EventItem[]>([])
   const [loading, setLoading] = useState(false)
   const [ingesting, setIngesting] = useState(false)
   const [status, setStatus] = useState('')
   const [insightsRefreshSignal, setInsightsRefreshSignal] = useState(0)
-  const [tagFilter, setTagFilter] = useState<TagFilter | null>(null)
+  const [tagFilter, setTagFilter] = useState<TagFilter | null>(
+    initialRoute.tagType && initialRoute.tagValue ? { type: initialRoute.tagType, value: initialRoute.tagValue } : null,
+  )
   const [keywordFilter, setKeywordFilter] = useState('')
+
+  // A4: global search across the whole catalog (server-side), distinct
+  // from the client-side keyword filter which only narrows the loaded tab.
+  const [globalQuery, setGlobalQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<EventItem[] | null>(null)
+  const [searching, setSearching] = useState(false)
+
+  // B2: card lists render in chunks; reset whenever what's being listed changes.
+  const PAGE_SIZE = 30
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+
+  // A3: "new since your last visit" badge on the Suggestions tab --
+  // client-side only, no accounts/infra. The timestamp is written the
+  // moment you actually visit Suggestions, so it means "unseen picks".
+  const LAST_VISIT_KEY = 'event-radar-last-visit'
+  const [lastVisitTs] = useState(() => Number(window.localStorage.getItem(LAST_VISIT_KEY) ?? 0))
+  const [suggestionsSeen, setSuggestionsSeen] = useState(false)
   const [timelineEvents, setTimelineEvents] = useState<EventItem[]>([])
   const [savedEvents, setSavedEvents] = useState<EventItem[]>([])
   const [debugStatus, setDebugStatus] = useState<DebugStatus | null>(null)
@@ -219,6 +332,86 @@ function App() {
     getInterests().then(setProfile)
   }, [])
 
+  // B1: reflect tab/filter state in the URL (replace -- these are view
+  // tweaks, not navigation). Modal event param handled by its own effect
+  // below, which pushes a history entry so Back closes the modal.
+  useEffect(() => {
+    applyHash(buildHash(tab, eventsStatusFilter, sortBy, tagFilter, modalOpen ? (modalEvent?.id ?? null) : null), 'replace')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, eventsStatusFilter, sortBy, tagFilter])
+
+  // B1: opening the modal adds a history entry; closing it strips the
+  // ?event= param so a refresh doesn't re-open it.
+  const modalEventId = modalEvent?.id ?? null
+  useEffect(() => {
+    if (modalOpen) {
+      applyHash(buildHash(tab, eventsStatusFilter, sortBy, tagFilter, modalEventId), 'push')
+    } else if (window.location.hash.includes('event=')) {
+      applyHash(buildHash(tab, eventsStatusFilter, sortBy, tagFilter, null), 'replace')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modalOpen])
+
+  // B1: Back/Forward (or a manual hash edit) re-derives all view state
+  // from the URL, including opening/closing the deep-linked modal.
+  useEffect(() => {
+    const onHashChange = () => {
+      const r = parseHash()
+      if (r.tab) setTab(r.tab)
+      if (r.status) setEventsStatusFilter(r.status)
+      if (r.sort) setSortBy(r.sort)
+      setTagFilter(r.tagType && r.tagValue ? { type: r.tagType, value: r.tagValue } : null)
+      if (r.eventId != null) {
+        openEventModal(r.eventId)
+      } else {
+        setModalLoading(false)
+        setModalEvent(null)
+        setModalOpen(false)
+      }
+    }
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // B1: a cold load whose URL carries ?event=NN opens that event's modal.
+  useEffect(() => {
+    if (initialRoute.eventId != null) openEventModal(initialRoute.eventId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // A4: debounced global search. A sequence counter guards against a slow
+  // earlier response landing after a newer one and clobbering results.
+  const searchSeq = useRef(0)
+  useEffect(() => {
+    const q = globalQuery.trim()
+    if (q.length < 2) {
+      setSearchResults(null)
+      setSearching(false)
+      return
+    }
+    setSearching(true)
+    const seq = ++searchSeq.current
+    const timer = window.setTimeout(() => {
+      searchEvents(q)
+        .then((res) => {
+          if (searchSeq.current === seq) setSearchResults(res)
+        })
+        .catch(() => {
+          if (searchSeq.current === seq) setSearchResults([])
+        })
+        .finally(() => {
+          if (searchSeq.current === seq) setSearching(false)
+        })
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [globalQuery])
+
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, eventsStatusFilter, tagFilter, keywordFilter, globalQuery])
+
   useEffect(() => {
     if (tab === 'insights') {
       setInsightsRefreshSignal((n) => n + 1)
@@ -285,6 +478,30 @@ function App() {
     setTagFilter((prev) => (prev && prev.type === f.type && prev.value === f.value ? null : f))
   }
 
+  const handleTabClick = (tabKey: Tab) => {
+    setTab(tabKey)
+    if (tabKey === 'suggestions' && !suggestionsSeen) {
+      setSuggestionsSeen(true)
+      window.localStorage.setItem(LAST_VISIT_KEY, String(Date.now()))
+    }
+  }
+
+  const handleExportSaved = () => {
+    downloadIcsMultiple(
+      savedEvents.map((e) => ({
+        event: e,
+        title: (lang === 'zh-Hant' && e.title_native) || e.title,
+        location: [
+          (lang === 'zh-Hant' && e.venue_name_native) || e.venue_name,
+          (lang === 'zh-Hant' && e.location_native) || e.location,
+        ]
+          .filter(Boolean)
+          .join(', '),
+      })),
+      'event-radar-saved.ics',
+    )
+  }
+
   const handleInterestChipClick = (term: string) => {
     setKeywordFilter((prev) => (prev.toLowerCase() === term.toLowerCase() ? '' : term))
   }
@@ -296,8 +513,15 @@ function App() {
   const activeEventList = tab === 'timeline' || tab === 'suggestions' ? timelineEvents : tab === 'saved' ? savedEvents : events
   const interestTerms = profile ? dedupeTerms([...profile.keywords, ...profile.categories]) : []
   const suggestedKeywords = interestTerms.filter((term) => countKeywordMatches(activeEventList, term) > 1)
+  // Every distinct category currently loaded, not just the ones an event
+  // card happens to be visible for -- the whole point is making a category
+  // like "Film" clickable even when nothing in it has scored high enough
+  // to appear near the top of a score-sorted list yet. Unlike
+  // suggestedKeywords above, deliberately NOT threshold-filtered: a
+  // category with only one event is still worth being able to jump to.
+  const availableCategories = Array.from(new Set(activeEventList.map((e) => e.category))).sort()
 
-  const displayedEvents = filterEvents(tab === 'saved' ? savedEvents : events, tagFilter, keywordFilter)
+  const displayedEvents = sortEvents(filterEvents(tab === 'saved' ? savedEvents : events, tagFilter, keywordFilter), sortBy)
   const displayedTimelineEvents = filterEvents(timelineEvents, tagFilter, keywordFilter)
   // Ongoing+upcoming, high-confidence matches only, best score first --
   // the "what should I actually go to" view. Everything below the
@@ -316,6 +540,31 @@ function App() {
           ? t('empty.noSaved')
           : t('empty.noEvents')
 
+  // A3: suggestions created in the catalog after the visitor's last
+  // recorded visit -- surfaced as a small count badge on the Suggestions
+  // tab until it's actually visited.
+  const newSuggestionCount = suggestionsSeen
+    ? 0
+    : displayedSuggestions.filter((e) => Date.parse(e.created_at) > lastVisitTs).length
+
+  // B2: chunked rendering for every long card list (Events / Saved /
+  // Suggestions list mode). Timeline keeps its full dataset -- it's a chart.
+  const paginatedCardList = cardListEvents.slice(0, visibleCount)
+  const remainingCards = Math.max(0, cardListEvents.length - visibleCount)
+  const loadMoreButton =
+    remainingCards > 0 ? (
+      <button
+        onClick={() => setVisibleCount((n) => n + PAGE_SIZE)}
+        className="self-center px-4 py-2 rounded-md border border-black/10 dark:border-white/10 text-sm font-medium hover:bg-black/5 dark:hover:bg-white/10"
+      >
+        {t('list.loadMore', { n: remainingCards })}
+      </button>
+    ) : null
+
+  // A4: search results replace the active tab's own content while active.
+  const trimmedQuery = globalQuery.trim()
+  const searchActive = trimmedQuery.length >= 2 && (searching || searchResults !== null)
+
   // The Timeline/Gantt view wants the full browser width to be readable
   // (it's a horizontally-scrolling chart, not prose) -- everything else
   // stays in the narrow reading-width column. Header/interests/tabs/filters
@@ -325,19 +574,19 @@ function App() {
   return (
     <div className="py-8 flex flex-col gap-6">
       <div className="max-w-3xl mx-auto w-full px-4 flex flex-col gap-6">
-        <header className="flex items-center justify-between gap-3">
+        <header className="flex items-center justify-between gap-2 sm:gap-3">
           <div>
-            <h1 className="font-display text-2xl font-bold">{t('app.title')}</h1>
-            <p className="text-sm text-black/60 dark:text-white/60">{t('app.tagline')}</p>
-            <p className="text-xs text-black/40 dark:text-white/40">{t('app.taglineNote')}</p>
+            <h1 className="font-display text-xl sm:text-2xl font-bold">{t('app.title')}</h1>
+            <p className="text-xs sm:text-sm text-black/60 dark:text-white/60">{t('app.tagline')}</p>
+            <p className="hidden sm:block text-xs text-black/40 dark:text-white/40">{t('app.taglineNote')}</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <div className="inline-flex rounded-md border border-black/10 dark:border-white/10 overflow-hidden text-sm">
               {(['zh-Hant', 'en'] as Lang[]).map((l) => (
                 <button
                   key={l}
                   onClick={() => setLang(l)}
-                  className={`px-2.5 py-1.5 font-medium ${
+                  className={`px-2 sm:px-2.5 py-1.5 font-medium ${
                     lang === l
                       ? 'bg-purple-600 text-white'
                       : 'bg-transparent text-black/60 dark:text-white/60 hover:bg-black/5 dark:hover:bg-white/10'
@@ -347,12 +596,17 @@ function App() {
                 </button>
               ))}
             </div>
+            {/* B5: on narrow screens the full label wrapped the header onto
+                two rows -- an icon-only button keeps it one row; the label
+                stays for screen readers and wider viewports. */}
             <button
               onClick={handleRefresh}
               disabled={ingesting}
-              className="px-4 py-2 rounded-md bg-black text-white dark:bg-white dark:text-black text-sm font-medium disabled:opacity-50"
+              aria-label={ingesting ? t('refreshing') : t('refresh')}
+              className="px-3 py-2 rounded-md bg-black text-white dark:bg-white dark:text-black text-sm font-medium disabled:opacity-50"
             >
-              {ingesting ? t('refreshing') : t('refresh')}
+              <span aria-hidden="true" className="sm:hidden">{ingesting ? '…' : '↻'}</span>
+              <span className="hidden sm:inline">{ingesting ? t('refreshing') : t('refresh')}</span>
             </button>
           </div>
         </header>
@@ -366,42 +620,93 @@ function App() {
         <AskBar onOpenEvent={openEventModal} />
 
         <div>
-          <div className="flex gap-1 border-b border-black/10 dark:border-white/10 mb-4">
+          <div className="flex gap-1 border-b border-black/10 dark:border-white/10 mb-4 overflow-x-auto">
             {TABS.map((tabKey) => (
               <button
                 key={tabKey}
-                onClick={() => setTab(tabKey)}
-                className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px ${
+                onClick={() => handleTabClick(tabKey)}
+                className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px whitespace-nowrap ${
                   tab === tabKey
                     ? 'border-purple-600 text-purple-600 dark:text-purple-400'
                     : 'border-transparent text-black/50 dark:text-white/50'
                 }`}
               >
                 {t(`tab.${tabKey}`)}
+                {/* A3: unseen high-confidence picks since the last visit. */}
+                {tabKey === 'suggestions' && newSuggestionCount > 0 && (
+                  <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-purple-600 text-white text-[10px] font-semibold align-middle">
+                    {t('tab.newBadge', { n: newSuggestionCount })}
+                  </span>
+                )}
               </button>
             ))}
           </div>
 
           {tab === 'events' && (
-            <div className="inline-flex self-start rounded-md border border-black/10 dark:border-white/10 overflow-hidden text-sm mb-2">
-              {EVENT_STATUS_FILTERS.map((status) => (
-                <button
-                  key={status}
-                  onClick={() => setEventsStatusFilter(status)}
-                  className={`px-3 py-1.5 font-medium transition-colors ${
-                    eventsStatusFilter === status
-                      ? 'bg-purple-600 text-white'
-                      : 'text-black/60 dark:text-white/60 hover:bg-black/5 dark:hover:bg-white/10'
-                  }`}
-                >
-                  {t(`tab.${status}`)}
-                </button>
-              ))}
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <div className="inline-flex self-start rounded-md border border-black/10 dark:border-white/10 overflow-hidden text-sm">
+                {EVENT_STATUS_FILTERS.map((status) => (
+                  <button
+                    key={status}
+                    onClick={() => setEventsStatusFilter(status)}
+                    className={`px-3 py-1.5 font-medium transition-colors ${
+                      eventsStatusFilter === status
+                        ? 'bg-purple-600 text-white'
+                        : 'text-black/60 dark:text-white/60 hover:bg-black/5 dark:hover:bg-white/10'
+                    }`}
+                  >
+                    {t(`tab.${status}`)}
+                  </button>
+                ))}
+              </div>
+              {/* Score-sort buries anything without a match yet (e.g. a
+                  freshly-added source's events, still waiting their turn for
+                  an LLM rerank) at the bottom of a long list -- date-sort
+                  makes those just as reachable as anything else, without
+                  needing a score at all. */}
+              <div className="inline-flex self-start rounded-md border border-black/10 dark:border-white/10 overflow-hidden text-sm">
+                {(['score', 'date'] as SortBy[]).map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setSortBy(s)}
+                    className={`px-3 py-1.5 font-medium transition-colors ${
+                      sortBy === s
+                        ? 'bg-purple-600 text-white'
+                        : 'text-black/60 dark:text-white/60 hover:bg-black/5 dark:hover:bg-white/10'
+                    }`}
+                  >
+                    {t(`sort.${s}`)}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
           {tab !== 'insights' && tab !== 'disclaimer' && (
             <div className="flex flex-col gap-2">
+              {/* A4: global search -- queries the whole catalog on the
+                  server, unlike the keyword filter below which only
+                  narrows the current tab's already-loaded list. */}
+              <div className="relative">
+                <input
+                  type="search"
+                  value={globalQuery}
+                  onChange={(e) => setGlobalQuery(e.target.value)}
+                  placeholder={t('search.placeholder')}
+                  aria-label={t('search.placeholder')}
+                  className="w-full rounded-md border border-black/10 dark:border-white/10 bg-transparent px-3 py-2 pr-8 text-sm"
+                />
+                {globalQuery && (
+                  <button
+                    onClick={() => setGlobalQuery('')}
+                    aria-label={t('search.clear')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-black/40 dark:text-white/40 hover:opacity-70"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+
               <div className="relative">
                 <input
                   type="text"
@@ -440,6 +745,25 @@ function App() {
                 </div>
               )}
 
+              {availableCategories.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  <span className="text-black/40 dark:text-white/40">{t('filter.categories')}</span>
+                  {availableCategories.map((category) => (
+                    <button
+                      key={category}
+                      onClick={() => handleTagClick({ type: 'category', value: category })}
+                      className={`px-2 py-0.5 rounded-full ${
+                        tagFilter?.type === 'category' && tagFilter.value === category
+                          ? 'bg-purple-600 text-white'
+                          : 'bg-black/5 dark:bg-white/10 text-black/60 dark:text-white/60 hover:bg-black/10 dark:hover:bg-white/20'
+                      }`}
+                    >
+                      {category}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {tagFilter && (
                 <div className="flex items-center gap-2 text-sm">
                   <span className="text-black/50 dark:text-white/50">{t('filter.filteringBy')}</span>
@@ -465,25 +789,75 @@ function App() {
           <InsightsPanel refreshSignal={insightsRefreshSignal} />
         ) : tab === 'disclaimer' ? (
           <DisclaimerView debugStatus={debugStatus} />
+        ) : searchActive ? (
+          // A4: global-search results, rendered with the same card list so
+          // feedback/save/open-detail all behave identically here.
+          <div className="flex flex-col gap-3">
+            {searching && searchResults === null ? (
+              [0, 1, 2].map((i) => <SkeletonCard key={i} />)
+            ) : searchResults !== null && searchResults.length === 0 ? (
+              <p className="text-sm text-black/50 dark:text-white/50">{t('search.noResults', { q: trimmedQuery })}</p>
+            ) : (
+              <>
+                {searchResults !== null && !searching && (
+                  <p className="text-sm text-black/50 dark:text-white/50">
+                    {t('search.resultsCount', { n: searchResults.length, q: trimmedQuery })}
+                  </p>
+                )}
+                {(searchResults ?? []).map((event) => (
+                  <EventCard
+                    key={`s-${event.id}`}
+                    event={event}
+                    profile={profile}
+                    onFeedback={handleFeedback}
+                    onToggleSave={handleToggleSave}
+                    activeFilter={tagFilter}
+                    onTagClick={handleTagClick}
+                    onOpenDetail={openEventModal}
+                  />
+                ))}
+              </>
+            )}
+          </div>
         ) : loading ? (
-          <p className="text-sm text-black/50 dark:text-white/50">{t('loading')}</p>
+          // B4: layout-matched skeletons instead of a bare "Loading…" line,
+          // so the switch to real cards doesn't shift the page around.
+          <div className="flex flex-col gap-3">
+            {[0, 1, 2].map((i) => (
+              <SkeletonCard key={i} />
+            ))}
+          </div>
         ) : tab === 'timeline' ? (
           <TimelineView events={displayedTimelineEvents} onEventClick={openEventModal} />
         ) : tab === 'suggestions' ? (
-          <SuggestionsView
-            events={cardListEvents}
-            profile={profile}
-            onFeedback={handleFeedback}
-            onToggleSave={handleToggleSave}
-            activeFilter={tagFilter}
-            onTagClick={handleTagClick}
-            emptyMessage={emptyMessage}
-          />
+          <>
+            <SuggestionsView
+              events={paginatedCardList}
+              profile={profile}
+              onFeedback={handleFeedback}
+              onToggleSave={handleToggleSave}
+              activeFilter={tagFilter}
+              onTagClick={handleTagClick}
+              emptyMessage={emptyMessage}
+              onOpenDetail={openEventModal}
+            />
+            {loadMoreButton}
+          </>
         ) : cardListEvents.length === 0 ? (
           <p className="text-sm text-black/50 dark:text-white/50">{emptyMessage}</p>
         ) : (
           <div className="flex flex-col gap-3">
-            {cardListEvents.map((event) => (
+            {/* A5: one .ics covering every saved event, instead of N
+                separate per-card downloads. */}
+            {tab === 'saved' && savedEvents.length > 0 && (
+              <button
+                onClick={handleExportSaved}
+                className="self-start px-3 py-1.5 rounded-md border border-black/10 dark:border-white/10 text-sm font-medium hover:bg-black/5 dark:hover:bg-white/10"
+              >
+                {t('saved.exportAll')}
+              </button>
+            )}
+            {paginatedCardList.map((event) => (
               <EventCard
                 key={event.id}
                 event={event}
@@ -492,8 +866,10 @@ function App() {
                 onToggleSave={handleToggleSave}
                 activeFilter={tagFilter}
                 onTagClick={handleTagClick}
+                onOpenDetail={openEventModal}
               />
             ))}
+            {loadMoreButton}
           </div>
         )}
       </div>
