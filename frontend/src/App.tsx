@@ -62,14 +62,14 @@ function inDatePreset(ev: EventItem, preset: DatePreset): boolean {
 
   if (preset === '7days' || preset === 'month') return startOk || endOk
 
-  // weekend: next Sat (6) / Sun (0) in HKT — same approach as the
-  // original: get UTC day of HKT midnight, adjust for UTC-8 offset.
+  // weekend: check if the event's time range overlaps the Sat-Sun window.
+  // "overlaps" = event starts on or before Sunday AND ends on or after Saturday.
   const todayUtcDow = today.getUTCDay()
   const todayHktDow = (todayUtcDow + 1) % 7
   const daysToSat = (6 - todayHktDow + 7) % 7
   const satOffset = daysToSat === 0 ? 0 : daysToSat
-  const inWeekend = (d: number) => d >= satOffset && d <= satOffset + 1
-  return inWeekend(startDays) || (ongoing && inWeekend(endDays))
+  // event started before Sunday ends AND (hasn't ended yet or ends on/after Saturday)
+  return startDays <= satOffset + 1 && (ongoing || endDays >= satOffset)
 }
 // Suggestions leads -- "what should I actually go to" is the question a
 // returning user has, ahead of browsing everything ongoing/upcoming/past.
