@@ -738,7 +738,7 @@ function App() {
                         {t('filter.toggle')} {activeCount > 0 && <span className="px-1.5 py-0.5 rounded-full bg-purple-600 text-white text-[10px]">{activeCount}</span>} <span aria-hidden="true">{filterOpen ? '▴' : '▾'}</span>
                       </button>
                     </div>
-                    {(filterOpen || activeCount > 0) && (
+                    {filterOpen && (
                       <div className="rounded-lg border border-black/10 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.03] p-3 flex flex-col gap-3">
                         <div className="relative">
                           <input
