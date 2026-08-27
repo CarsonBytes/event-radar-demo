@@ -37,20 +37,39 @@ type DatePreset = 'all' | 'weekend' | '7days' | 'month'
 
 function inDatePreset(ev: EventItem, preset: DatePreset): boolean {
   if (preset === 'all') return true
-  const start = startOfDay(parseUtc(ev.start))
   const today = startOfDay(new Date())
-  const ms = start.getTime() - today.getTime()
-  const days = Math.round(ms / 86400000)
-  if (days < 0) return false
-  if (preset === '7days') return days <= 7
-  if (preset === 'month') return days <= 30
-  // weekend: next Sat (6) / Sun (0) in HKT — approximated via UTC day of HKT midnight
-  const dow = today.getUTCDay()
-  // HKT midnight is UTC-8, so UTC day is one behind HKT day for 00:00 HKT
-  const hktDow = (dow + 1) % 7
-  const daysToSat = (6 - hktDow + 7) % 7
+
+  const start = startOfDay(parseUtc(ev.start))
+  const startDays = Math.round((start.getTime() - today.getTime()) / 86400000)
+
+  let endDays = startDays
+  if (ev.end) {
+    const end = startOfDay(parseUtc(ev.end))
+    endDays = Math.round((end.getTime() - today.getTime()) / 86400000)
+  }
+
+  // Include if event hasn't ended yet (end >= today) and either
+  // start or end falls within the preset range.
+  const ongoing = endDays >= 0
+  const startOk = startDays >= 0 && (
+    (preset === '7days' && startDays <= 7) ||
+    (preset === 'month' && startDays <= 30)
+  )
+  const endOk = ongoing && (
+    (preset === '7days' && endDays <= 7) ||
+    (preset === 'month' && endDays <= 30)
+  )
+
+  if (preset === '7days' || preset === 'month') return startOk || endOk
+
+  // weekend: next Sat (6) / Sun (0) in HKT — same approach as the
+  // original: get UTC day of HKT midnight, adjust for UTC-8 offset.
+  const todayUtcDow = today.getUTCDay()
+  const todayHktDow = (todayUtcDow + 1) % 7
+  const daysToSat = (6 - todayHktDow + 7) % 7
   const satOffset = daysToSat === 0 ? 0 : daysToSat
-  return days >= satOffset && days <= satOffset + 1
+  const inWeekend = (d: number) => d >= satOffset && d <= satOffset + 1
+  return inWeekend(startDays) || (ongoing && inWeekend(endDays))
 }
 // Suggestions leads -- "what should I actually go to" is the question a
 // returning user has, ahead of browsing everything ongoing/upcoming/past.
