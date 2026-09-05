@@ -194,7 +194,9 @@ def _find_cross_source_duplicate(ne, existing_events: list[Event]) -> Event | No
 _MIN_RERANK_GAP = dt.timedelta(hours=INGEST_INTERVAL_HOURS) if INGEST_INTERVAL_HOURS > 0 else dt.timedelta(hours=12)
 
 
-def _should_rerank(db: Session, profile: InterestProfile) -> bool:
+def _should_rerank(db: Session, profile: InterestProfile, new_count: int = 0) -> bool:
+    if new_count > 0:
+        return True  # new events scraped -- always rerank to score them
     last = db.scalar(
         select(LlmCallLog).where(LlmCallLog.kind == "rerank").order_by(LlmCallLog.created_at.desc())
     )
@@ -675,14 +677,14 @@ def rerank_all(db: Session, trigger: str = "unknown") -> tuple[int, bool]:
         raise
 
 
-def maybe_rerank(db: Session, trigger: str = "unknown") -> tuple[int, bool]:
+def maybe_rerank(db: Session, trigger: str = "unknown", new_count: int = 0) -> tuple[int, bool]:
     """rerank_all(), but only if due (see _should_rerank) -- the throttle
     that keeps the public Refresh button and every interest save from each
     spending a full-catalog rerank's worth of LLM calls."""
     profile = db.get(InterestProfile, 1)
     if profile is None or not profile.raw_text:
         return 0, False
-    if not _should_rerank(db, profile):
+    if not _should_rerank(db, profile, new_count=new_count):
         logger.info("skipping rerank: last one was within %s and interests haven't changed", _MIN_RERANK_GAP)
         log_event(db, "rerank", f"rerank skipped, not due yet (trigger={trigger})", detail={"trigger": trigger})
         _set_rerank_status(
@@ -706,7 +708,7 @@ def run_ingest(db: Session, trigger: str = "scheduled") -> IngestSummary:
     # excluded from that endpoint (routers/ingest.py), an LLM call has no
     # place adding latency/cost to a manual "Refresh" click's HTTP response.
     _backfill_missing_venues(db)
-    ranked, _ = maybe_rerank(db, trigger=trigger)
+    ranked, _ = maybe_rerank(db, trigger=trigger, new_count=new)
 
     duration_ms = int((time.perf_counter() - start_perf) * 1000)
     db.add(
