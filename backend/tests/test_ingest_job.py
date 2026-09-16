@@ -593,6 +593,23 @@ class TestCrossSourceDuplicateDetection:
         assert breakdown["bad_source"] == {"fetched": 0, "new": 0, "updated": 0}
         assert breakdown["hktdc"]["new"] == 1
 
+    def test_fetch_and_upsert_keys_breakdown_by_module_name(self, db_session):
+        # CONNECTORS entries are real modules (see _build_connectors), not
+        # classes -- __class__.__name__ would be "module" for every one of
+        # them, collapsing the whole breakdown into a single useless key.
+        # Found live: first production run logged breakdown={"module": ...}.
+        import types
+        mod = types.ModuleType("app.connectors.urbtix")
+        mod.fetch = MagicMock(return_value=[self._normalized(
+            source="urbtix", source_id="u-1", title="HK Phil Concert",
+        )])
+
+        with patch("app.ingest_job.CONNECTORS", [mod]):
+            fetched, new, updated, duplicates, breakdown = _fetch_and_upsert(db_session)
+
+        assert fetched == 1
+        assert list(breakdown.keys()) == ["urbtix"]
+
 
 class TestScheduleRerank:
     def setup_method(self):

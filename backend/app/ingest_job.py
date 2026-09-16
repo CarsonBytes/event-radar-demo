@@ -298,10 +298,15 @@ def _fetch_and_upsert(db: Session) -> tuple[int, int, int, int, dict[str, dict]]
     existing_events = list(db.scalars(select(Event)).all())
 
     for connector in CONNECTORS:
+        # CONNECTORS are modules (see _build_connectors), not classes --
+        # __class__.__name__ would be "module" for all of them. Prefer an
+        # explicit SOURCE attr, else the module's own last segment
+        # (app.connectors.art_mate -> art_mate).
         # str(): MagicMock connectors in tests auto-create SOURCE as a
         # MagicMock (not JSON-serializable) -- coerce so breakdown keys
         # are always strings and the IngestRun JSON column never fails.
-        source = str(getattr(connector, "SOURCE", None) or connector.__class__.__name__)
+        mod_name = getattr(connector, "__name__", "") or ""
+        source = str(getattr(connector, "SOURCE", None) or mod_name.split(".")[-1] or connector.__class__.__name__)
         conn_fetched = conn_new = conn_updated = 0
         try:
             for ne in connector.fetch():
