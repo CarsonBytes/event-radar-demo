@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.config import DEMO_MODE, INGEST_INTERVAL_HOURS
 from app.connectors import urbtix
 from app.db import SessionLocal
-from app.models import Event, Feedback, IngestRun, InterestProfile, LlmCallLog
+from app.models import Event, Feedback, IngestRun, InterestProfile, LlmCallLog, SystemEvent
 from app.ranking import ensure_embeddings, stage1_filter, stage2_rerank
 from app.schemas import IngestSummary
 from app.system_log import log_event
@@ -194,6 +194,9 @@ def _find_cross_source_duplicate(ne, existing_events: list[Event]) -> Event | No
 _MIN_RERANK_GAP = dt.timedelta(hours=INGEST_INTERVAL_HOURS) if INGEST_INTERVAL_HOURS > 0 else dt.timedelta(hours=12)
 
 
+_RERANK_FAILURE_BACKOFF = dt.timedelta(hours=1)
+
+
 def _should_rerank(db: Session, profile: InterestProfile, new_count: int = 0) -> bool:
     if new_count > 0:
         return True  # new events scraped -- always rerank to score them
@@ -204,6 +207,16 @@ def _should_rerank(db: Session, profile: InterestProfile, new_count: int = 0) ->
         return True
     if profile.updated_at > last.created_at:
         return True  # interests changed since the last rerank -- always honor that
+    # If the last rerank hit a quota or error, back off instead of retrying
+    last_rerank_event = db.scalar(
+        select(SystemEvent)
+        .where(SystemEvent.category == "rerank", SystemEvent.level == "error")
+        .order_by(SystemEvent.created_at.desc())
+    )
+    if last_rerank_event is not None:
+        backoff_until = last_rerank_event.created_at + _RERANK_FAILURE_BACKOFF
+        if dt.datetime.utcnow() < backoff_until:
+            return False
     return dt.datetime.utcnow() - last.created_at >= _MIN_RERANK_GAP
 
 
@@ -611,6 +624,23 @@ def rerank_all(db: Session, trigger: str = "unknown") -> tuple[int, bool]:
         candidate_ids = {ev.id for ev in candidates}
         latest_feedback_at = db.scalar(select(func.max(Feedback.created_at)))
         to_rescore = [ev for ev in candidates if _needs_rescore(ev, profile_version, latest_feedback_at)]
+
+        if not to_rescore:
+            ranked = sum(1 for ev in candidates if ev.llm_score is not None)
+            log_event(
+                db, "rerank",
+                f"rerank finished (trigger={trigger}): ranked={ranked} rescored=0 "
+                f"skipped_fresh={len(candidates)} attempted=0",
+                detail={"trigger": trigger, "ranked": ranked, "candidates": len(candidates),
+                        "rescored": 0, "skipped_fresh": len(candidates), "attempted": 0,
+                        "changed_during_run": False, "quota_exhausted": False},
+            )
+            _set_rerank_status(
+                in_progress=False, finished_at=dt.datetime.utcnow().isoformat(), last_result="ok",
+                quota_exhausted=False,
+            )
+            db.commit()
+            return ranked, False
 
         scores, attempted, quota_exhausted = stage2_rerank(
             to_rescore, profile, db,

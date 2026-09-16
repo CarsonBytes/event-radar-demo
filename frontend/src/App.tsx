@@ -365,7 +365,21 @@ function App() {
       getInsights().then(setQuotaInsights).catch(() => {})
     }
     fetchStatus()
-    const id = window.setInterval(fetchStatus, 10000)
+    // WIDENED 2026-09-12: was 10s, firing forever for as long as any tab
+    // stays open. getInsights() hits the shared-project llm_calls table on
+    // every tick -- on the PUBLIC demo instance (no auth, so tabs from bots/
+    // crawlers/forgotten visits linger far more than on the Access-gated
+    // private one) this alone was ~7,400 Supabase calls/day, a real
+    // contributor to the project's reported Supabase egress. Went to 300s
+    // first, then settled on 60s the same day once getInsights() was also
+    // switched to reading the one-row llm_daily_summary instead of summing
+    // raw ledger rows (see llm_logging.py) -- at that fixed per-call cost,
+    // 60s (~1,440 calls/day, ~6MB/day) is cheap enough to prioritize fresher
+    // status over the extra egress headroom 300s bought. Neither call needs
+    // sub-minute freshness -- rerank completion has its own fast, bounded
+    // poll (pollForFreshScores, 15s apart for ~2.5 min, fired right after
+    // the action that causes a rerank) for when that's actually needed.
+    const id = window.setInterval(fetchStatus, 60000)
     return () => window.clearInterval(id)
   }, [])
 

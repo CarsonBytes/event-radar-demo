@@ -230,10 +230,11 @@ class TestStage2CandidateSelection:
 
         with patch("app.ingest_job.ensure_embeddings"), \
              patch("app.ingest_job.stage1_filter", return_value=[fresh]), \
-             patch("app.ingest_job.stage2_rerank", return_value=({}, set(), False)) as mock_rerank:
-            rerank_all(db_session)
+             patch("app.ingest_job.stage2_rerank") as mock_rerank:
+            ranked, changed = rerank_all(db_session)
 
-        assert mock_rerank.call_args[0][0] == []  # nothing needed re-scoring
+        mock_rerank.assert_not_called()  # early exit -- nothing needed re-scoring
+        assert ranked == 1
         assert fresh.llm_score == 90.0
         assert fresh.why_match == "already scored"
 
@@ -302,10 +303,10 @@ class TestStage2CandidateSelection:
 
         with patch("app.ingest_job.ensure_embeddings"), \
              patch("app.ingest_job.stage1_filter", return_value=[ev]), \
-             patch("app.ingest_job.stage2_rerank", return_value=({}, set(), False)) as mock_rerank:
-            rerank_all(db_session)
+             patch("app.ingest_job.stage2_rerank") as mock_rerank:
+            ranked, changed = rerank_all(db_session)
 
-        assert mock_rerank.call_args[0][0] == []  # too soon -- next trigger past the cooldown will catch it
+        mock_rerank.assert_not_called()  # too soon -- next trigger past the cooldown will catch it
 
     def test_feedback_rescore_gate_respects_a_custom_now(self):
         from app.ingest_job import _MIN_FEEDBACK_RESCORE_GAP, _needs_rescore

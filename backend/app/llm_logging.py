@@ -6,6 +6,9 @@ from sqlalchemy.orm import Session
 
 from app.config import SUPABASE_SERVICE_ROLE_KEY, SUPABASE_URL
 from app.models import LlmCallLog
+from app import supabase_meter  # per-endpoint REST counts (memory-only unless SUPABASE_METER_FILE is set)
+
+supabase_meter.configure(app="event-radar")
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +95,7 @@ def _log_to_shared_ledger(
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         return
     try:
-        httpx.post(
+        resp = httpx.post(
             f"{SUPABASE_URL}/rest/v1/llm_calls",
             headers={
                 "apikey": SUPABASE_SERVICE_ROLE_KEY,
@@ -113,6 +116,7 @@ def _log_to_shared_ledger(
             },
             timeout=5,
         )
+        supabase_meter.record("POST", "llm_calls", supabase_meter.response_bytes(resp))
     except Exception:
         logger.warning("failed to log to shared llm_calls ledger", exc_info=True)
 
@@ -129,22 +133,80 @@ def _project_of(purpose: str) -> str:
 
 def fetch_shared_usage_today() -> dict:
     """Cross-project usage for today (HKT), from the shared Supabase ledger.
+
+    ADDED 2026-09-12: reads the one-row `llm_daily_summary` (kept current by
+    a trigger on every llm_calls insert -- see
+    D:\\llm-usage-dashboard\\migrations\\001_llm_daily_summary.sql) instead of
+    fetching every raw row created today and summing them here. Found live:
+    this function is polled from the frontend's status bar, and on the
+    public demo instance (no auth, so tabs linger far longer than on the
+    private one) that added up to ~7,400 calls/day against the OLD query --
+    whose cost scaled with how many calls had happened today, paid on every
+    single poll regardless. The new query returns one small row no matter
+    how big today's row count is. FALLS BACK to the old raw-row method (via
+    _fetch_shared_usage_today_from_raw_rows) if llm_daily_summary doesn't
+    exist yet (PostgREST 404s an unknown table the same as it would an
+    inaccessible one), so this keeps working correctly before that migration
+    has been run -- rolling it out is not a breaking, ordered dependency.
+
     Best-effort: returns zeros if Supabase isn't configured or unreachable."""
     empty = {"calls": 0, "cost_usd": 0.0, "calls_by_project": {}}
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         return empty
 
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+    }
+    # NOT hkt_today_start_utc().date() -- that instant is expressed in naive
+    # UTC (HKT midnight is 16:00 the PREVIOUS UTC calendar day), so its own
+    # .date() is one day behind the HKT calendar day it actually anchors.
+    # Confirmed live: querying that value returned yesterday's summary row.
+    # The HKT calendar date needs computing in the HKT zone directly, same
+    # as the migration's trigger does in SQL (`AT TIME ZONE 'Asia/Hong_Kong'`).
+    today = dt.datetime.now(HKT).date().isoformat()
+    try:
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/llm_daily_summary",
+            headers=headers,
+            params={"select": "total_calls,total_cost_usd,calls_by_project", "day": f"eq.{today}"},
+            timeout=10,
+        )
+        supabase_meter.record("GET", "llm_daily_summary", supabase_meter.response_bytes(resp))
+        if resp.status_code == 404:
+            return _fetch_shared_usage_today_from_raw_rows(headers)
+        resp.raise_for_status()
+        rows = resp.json()
+    except Exception:
+        logger.warning("failed to fetch llm_daily_summary", exc_info=True)
+        return empty
+
+    if not rows:
+        return empty
+    row = rows[0]
+    return {
+        "calls": row.get("total_calls") or 0,
+        "cost_usd": row.get("total_cost_usd") or 0.0,
+        "calls_by_project": row.get("calls_by_project") or {},
+    }
+
+
+def _fetch_shared_usage_today_from_raw_rows(headers: dict) -> dict:
+    """Pre-migration fallback: the original approach, summing every row
+    created today client-side -- real cost scales with today's row count,
+    which is exactly what llm_daily_summary's trigger exists to replace.
+    Kept only so fetch_shared_usage_today() doesn't break for a deployment
+    that hasn't run 001_llm_daily_summary.sql yet."""
+    empty = {"calls": 0, "cost_usd": 0.0, "calls_by_project": {}}
     today_start = hkt_today_start_utc().isoformat() + "Z"
     try:
         resp = httpx.get(
             f"{SUPABASE_URL}/rest/v1/llm_calls",
-            headers={
-                "apikey": SUPABASE_SERVICE_ROLE_KEY,
-                "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-            },
+            headers=headers,
             params={"select": "purpose,cost_usd,created_at", "created_at": f"gte.{today_start}"},
             timeout=10,
         )
+        supabase_meter.record("GET", "llm_calls", supabase_meter.response_bytes(resp))
         resp.raise_for_status()
         rows = resp.json()
     except Exception:
