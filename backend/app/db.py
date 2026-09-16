@@ -41,6 +41,12 @@ _NEW_COLUMNS = {
     "ask_logs": {
         "referenced_events": "TEXT",
     },
+    "llm_call_logs": {
+        "provider": "VARCHAR(32)",
+    },
+    "ingest_runs": {
+        "connector_breakdown": "TEXT",
+    },
 }
 
 # ALTER TABLE ADD COLUMN backfills existing rows with NULL, not the ORM's

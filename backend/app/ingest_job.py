@@ -279,14 +279,15 @@ def _needs_rescore(
     return False
 
 
-def _fetch_and_upsert(db: Session) -> tuple[int, int, int, int]:
+def _fetch_and_upsert(db: Session) -> tuple[int, int, int, int, dict[str, dict]]:
     """Pull every connector and upsert into Event. No LLM cost -- this alone
     is always safe to run synchronously in an HTTP request. Returns
-    (fetched, new, updated, duplicates_skipped) -- the last one counts
+    (fetched, new, updated, duplicates_skipped, connector_breakdown) -- the last one counts
     events that matched an existing row from a *different* source by title
     + overlapping dates (see _find_cross_source_duplicate) and were
     deliberately not inserted as a second row for the same real event."""
     fetched = new = updated = duplicates = 0
+    breakdown: dict[str, dict] = {}
 
     db.execute(Event.__table__.delete().where(Event.source == "mock"))
 
@@ -297,79 +298,91 @@ def _fetch_and_upsert(db: Session) -> tuple[int, int, int, int]:
     existing_events = list(db.scalars(select(Event)).all())
 
     for connector in CONNECTORS:
-        for ne in connector.fetch():
-            fetched += 1
-            existing = db.scalar(
-                select(Event).where(Event.source == ne.source, Event.source_id == ne.source_id)
-            )
-            if existing is None:
-                duplicate = _find_cross_source_duplicate(ne, existing_events)
-                if duplicate is not None:
-                    duplicates += 1
-                    continue
-                new_event = Event(
-                    source=ne.source,
-                    source_id=ne.source_id,
-                    source_url=ne.source_url,
-                    title=ne.title,
-                    title_native=ne.title_native,
-                    native_lang=ne.native_lang,
-                    description=ne.description,
-                    category=ne.category,
-                    category_native=ne.category_native,
-                    start=ne.start,
-                    end=ne.end,
-                    venue_name=ne.venue_name,
-                    venue_name_native=ne.venue_name_native,
-                    location=ne.location,
-                    location_native=ne.location_native,
-                    image_url=ne.image_url,
+        # str(): MagicMock connectors in tests auto-create SOURCE as a
+        # MagicMock (not JSON-serializable) -- coerce so breakdown keys
+        # are always strings and the IngestRun JSON column never fails.
+        source = str(getattr(connector, "SOURCE", None) or connector.__class__.__name__)
+        conn_fetched = conn_new = conn_updated = 0
+        try:
+            for ne in connector.fetch():
+                fetched += 1
+                conn_fetched += 1
+                existing = db.scalar(
+                    select(Event).where(Event.source == ne.source, Event.source_id == ne.source_id)
                 )
-                db.add(new_event)
-                existing_events.append(new_event)
-                new += 1
-            else:
-                # Invalidate the cached embedding AND llm_score if the text
-                # either was actually computed from changed -- otherwise
-                # ensure_embeddings (ranking.py) has no way to know the
-                # embedding is stale, and _needs_rescore (above) has no way
-                # to know the score is stale, since both would otherwise
-                # keep being treated as still-valid against text that no
-                # longer exists.
-                if existing.title != ne.title or existing.description != ne.description or existing.category != ne.category:
-                    existing.embedding = None
-                    existing.llm_score = None
-                    existing.why_match = ""
-                    existing.scored_at = None
-                    existing.scored_profile_version = None
-                existing.title = ne.title
-                existing.title_native = ne.title_native
-                existing.native_lang = ne.native_lang
-                existing.description = ne.description
-                existing.category = ne.category
-                existing.category_native = ne.category_native
-                existing.start = ne.start
-                existing.end = ne.end
-                # `or existing.venue_name`, not a plain overwrite: art_mate
-                # and expo_king fetch venue via a *separate* per-event
-                # request (see their connectors) that can transiently fail
-                # independently of the listing fetch that succeeded -- an
-                # unconditional overwrite would silently blank out an
-                # already-correct venue back to "Venue TBA" on nothing more
-                # than one bad network blip on a later ingest cycle. Other
-                # connectors get venue_name from the same single request as
-                # everything else, so an empty value from them is a
-                # consistent "source says no venue," not a partial failure
-                # -- keeping the old value in that case is still correct,
-                # just never actually triggered for them in practice.
-                existing.venue_name = ne.venue_name or existing.venue_name
-                existing.venue_name_native = ne.venue_name_native or existing.venue_name_native
-                existing.location = ne.location
-                existing.location_native = ne.location_native
-                existing.image_url = ne.image_url
-                updated += 1
+                if existing is None:
+                    duplicate = _find_cross_source_duplicate(ne, existing_events)
+                    if duplicate is not None:
+                        duplicates += 1
+                        continue
+                    new_event = Event(
+                        source=ne.source,
+                        source_id=ne.source_id,
+                        source_url=ne.source_url,
+                        title=ne.title,
+                        title_native=ne.title_native,
+                        native_lang=ne.native_lang,
+                        description=ne.description,
+                        category=ne.category,
+                        category_native=ne.category_native,
+                        start=ne.start,
+                        end=ne.end,
+                        venue_name=ne.venue_name,
+                        venue_name_native=ne.venue_name_native,
+                        location=ne.location,
+                        location_native=ne.location_native,
+                        image_url=ne.image_url,
+                    )
+                    db.add(new_event)
+                    existing_events.append(new_event)
+                    new += 1
+                    conn_new += 1
+                else:
+                    # Invalidate the cached embedding AND llm_score if the text
+                    # either was actually computed from changed -- otherwise
+                    # ensure_embeddings (ranking.py) has no way to know the
+                    # embedding is stale, and _needs_rescore (above) has no way
+                    # to know the score is stale, since both would otherwise
+                    # keep being treated as still-valid against text that no
+                    # longer exists.
+                    if existing.title != ne.title or existing.description != ne.description or existing.category != ne.category:
+                        existing.embedding = None
+                        existing.llm_score = None
+                        existing.why_match = ""
+                        existing.scored_at = None
+                        existing.scored_profile_version = None
+                    existing.title = ne.title
+                    existing.title_native = ne.title_native
+                    existing.native_lang = ne.native_lang
+                    existing.description = ne.description
+                    existing.category = ne.category
+                    existing.category_native = ne.category_native
+                    existing.start = ne.start
+                    existing.end = ne.end
+                    # `or existing.venue_name`, not a plain overwrite: art_mate
+                    # and expo_king fetch venue via a *separate* per-event
+                    # request (see their connectors) that can transiently fail
+                    # independently of the listing fetch that succeeded -- an
+                    # unconditional overwrite would silently blank out an
+                    # already-correct venue back to "Venue TBA" on nothing more
+                    # than one bad network blip on a later ingest cycle. Other
+                    # connectors get venue_name from the same single request as
+                    # everything else, so an empty value from them is a
+                    # consistent "source says no venue," not a partial failure
+                    # -- keeping the old value in that case is still correct,
+                    # just never actually triggered for them in practice.
+                    existing.venue_name = ne.venue_name or existing.venue_name
+                    existing.venue_name_native = ne.venue_name_native or existing.venue_name_native
+                    existing.location = ne.location
+                    existing.location_native = ne.location_native
+                    existing.image_url = ne.image_url
+                    updated += 1
+                    conn_updated += 1
+        except Exception:
+            logger.warning("connector %s failed", source, exc_info=True)
+        breakdown[source] = {"fetched": conn_fetched, "new": conn_new, "updated": conn_updated}
     db.commit()
-    return fetched, new, updated, duplicates
+    return fetched, new, updated, duplicates, breakdown
 
 
 # art_mate/expo_king: their listing pages never carry a venue field at all
@@ -732,7 +745,7 @@ def run_ingest(db: Session, trigger: str = "scheduled") -> IngestSummary:
     started_at = dt.datetime.utcnow()
     start_perf = time.perf_counter()
 
-    fetched, new, updated, duplicates = _fetch_and_upsert(db)
+    fetched, new, updated, duplicates, connector_breakdown = _fetch_and_upsert(db)
     # Only ever runs here (the scheduled background path), not the
     # synchronous /api/ingest handler -- same reasoning as rerank being
     # excluded from that endpoint (routers/ingest.py), an LLM call has no
@@ -749,6 +762,7 @@ def run_ingest(db: Session, trigger: str = "scheduled") -> IngestSummary:
             new=new,
             updated=updated,
             ranked=ranked,
+            connector_breakdown=connector_breakdown,
         )
     )
     db.commit()

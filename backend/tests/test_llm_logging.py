@@ -1,7 +1,8 @@
 import datetime as dt
 from unittest.mock import MagicMock, patch
 
-from app.llm_logging import HKT, fetch_shared_usage_today, hkt_today_start_utc
+from app.llm_logging import PRICING, HKT, fetch_shared_usage_today, hkt_today_start_utc, log_call
+from app.models import LlmCallLog
 
 
 def test_boundary_is_exactly_midnight_in_hkt():
@@ -130,3 +131,22 @@ class TestFetchSharedUsageToday:
             fetch_shared_usage_today()
         assert supabase_meter.snapshot() == {"GET llm_daily_summary": 1}
         supabase_meter.reset()
+
+
+class TestLogCallPersistence:
+    def test_provider_is_persisted(self, db_session):
+        log_call(db_session, kind="rerank", model="gpt-4o-mini",
+                 input_tokens=1000, output_tokens=500, latency_ms=100,
+                 provider="deepseek")
+        row = db_session.query(LlmCallLog).one()
+        assert row.provider == "deepseek"
+        assert row.kind == "rerank"
+
+    def test_embedding_model_uses_cheap_pricing(self, db_session):
+        # text-embedding-3-small is $0.02/MTok -- must NOT fall through to
+        # DEFAULT_PRICING ($0.50), which would overstate cost ~25x.
+        assert PRICING["text-embedding-3-small"][0] < 0.10
+        log_call(db_session, kind="embedding", model="text-embedding-3-small",
+                 input_tokens=1_000_000, output_tokens=0, latency_ms=200)
+        row = db_session.query(LlmCallLog).one()
+        assert row.cost_usd < 0.10

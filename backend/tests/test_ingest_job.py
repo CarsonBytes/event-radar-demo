@@ -532,7 +532,7 @@ class TestCrossSourceDuplicateDetection:
         )]
 
         with patch("app.ingest_job.CONNECTORS", [art_mate_like, expo_king_like]):
-            fetched, new, updated, duplicates = _fetch_and_upsert(db_session)
+            fetched, new, updated, duplicates, _breakdown = _fetch_and_upsert(db_session)
 
         assert fetched == 2
         assert new == 1
@@ -550,12 +550,48 @@ class TestCrossSourceDuplicateDetection:
         )]
 
         with patch("app.ingest_job.CONNECTORS", [source_a, source_b]):
-            fetched, new, updated, duplicates = _fetch_and_upsert(db_session)
+            fetched, new, updated, duplicates, _breakdown = _fetch_and_upsert(db_session)
 
         assert fetched == 2
         assert new == 2
         assert duplicates == 0
         assert db_session.query(Event).count() == 2
+
+    def test_fetch_and_upsert_returns_per_connector_breakdown(self, db_session):
+        source_a = MagicMock()
+        source_a.SOURCE = "hktdc"
+        source_a.fetch.return_value = [self._normalized(
+            source="hktdc", source_id="a-1", title="Hong Kong Book Fair 2026",
+        )]
+        source_b = MagicMock()
+        source_b.SOURCE = "expo_king"
+        source_b.fetch.return_value = [self._normalized(
+            source="expo_king", source_id="b-1", title="Ani-Com & Games Hong Kong 2026",
+        )]
+
+        with patch("app.ingest_job.CONNECTORS", [source_a, source_b]):
+            fetched, new, updated, duplicates, breakdown = _fetch_and_upsert(db_session)
+
+        assert breakdown["hktdc"] == {"fetched": 1, "new": 1, "updated": 0}
+        assert breakdown["expo_king"] == {"fetched": 1, "new": 1, "updated": 0}
+
+    def test_fetch_and_upsert_isolates_a_failing_connector(self, db_session):
+        bad = MagicMock()
+        bad.SOURCE = "bad_source"
+        bad.fetch.side_effect = RuntimeError("boom")
+        good = MagicMock()
+        good.SOURCE = "hktdc"
+        good.fetch.return_value = [self._normalized(
+            source="hktdc", source_id="a-1", title="Hong Kong Book Fair 2026",
+        )]
+
+        with patch("app.ingest_job.CONNECTORS", [bad, good]):
+            fetched, new, updated, duplicates, breakdown = _fetch_and_upsert(db_session)
+
+        assert fetched == 1
+        assert new == 1
+        assert breakdown["bad_source"] == {"fetched": 0, "new": 0, "updated": 0}
+        assert breakdown["hktdc"]["new"] == 1
 
 
 class TestScheduleRerank:

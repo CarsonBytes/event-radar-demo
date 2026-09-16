@@ -6,11 +6,14 @@ SSL workaround (this machine's AVG intercepts HTTPS)."""
 
 import logging
 import math
+import time
 
 from openai import OpenAI
+from sqlalchemy.orm import Session
 
 from app.config import OPENAI_BASE_URL
-from app.llm_client import _HTTP_CLIENT, _current_chatanywhere_key, invoke_with_rotation
+from app.llm_client import _HTTP_CLIENT, _current_chatanywhere_key, invoke_with_rotation, last_model_used, last_provider_used
+from app.llm_logging import log_call
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +36,7 @@ def _build_client() -> OpenAI | None:
     return OpenAI(**kwargs)
 
 
-def embed_batch(texts: list[str]) -> list[list[float]] | None:
+def embed_batch(texts: list[str], db: Session | None = None) -> list[list[float]] | None:
     """One request embeds the whole batch -- unlike chat completions, the
     embeddings endpoint takes an array input, so this stays cheap against
     the shared 200/day *request* quota regardless of how many texts are in
@@ -42,7 +45,20 @@ def embed_batch(texts: list[str]) -> list[list[float]] | None:
     if not texts:
         return None
     try:
+        start = time.perf_counter()
         response = invoke_with_rotation(lambda: _call_embeddings(texts))
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        usage = getattr(response, "usage", None)
+        if usage and db is not None:
+            log_call(
+                db,
+                kind="embedding",
+                model=EMBEDDING_MODEL,
+                input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+                output_tokens=getattr(usage, "total_tokens", 0) - getattr(usage, "prompt_tokens", 0),
+                latency_ms=latency_ms,
+                provider=last_provider_used(),
+            )
         return [item.embedding for item in response.data]
     except Exception:
         logger.warning("embed_batch failed, semantic matching degrades to keyword-only this round", exc_info=True)

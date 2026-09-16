@@ -122,6 +122,7 @@ class IngestRun(Base):
     new: Mapped[int] = mapped_column(Integer, default=0)
     updated: Mapped[int] = mapped_column(Integer, default=0)
     ranked: Mapped[int] = mapped_column(Integer, default=0)
+    connector_breakdown: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class LlmCallLog(Base):
@@ -129,8 +130,9 @@ class LlmCallLog(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
-    kind: Mapped[str] = mapped_column(String(32))  # "interest_parse" | "rerank"
+    kind: Mapped[str] = mapped_column(String(32))  # "interest_parse" | "rerank" | "embedding" | "venue_extract"
     model: Mapped[str] = mapped_column(String(64))
+    provider: Mapped[str] = mapped_column(String(32), default="chatanywhere")
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)

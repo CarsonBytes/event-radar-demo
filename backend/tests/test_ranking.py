@@ -1,7 +1,7 @@
 import datetime as dt
 from unittest.mock import patch
 
-from app.models import Event, Feedback, InterestProfile
+from app.models import Event, Feedback, InterestProfile, LlmCallLog
 from app.ranking import _batches, _feedback_context, apply_feedback, ensure_embeddings, persist_feedback_weights, stage1_filter, stage2_rerank
 
 
@@ -242,6 +242,18 @@ class TestStage2Rerank:
             scores, attempted, quota_exhausted = stage2_rerank(events, profile, db=None)
         assert quota_exhausted is False
 
+    def test_failed_batch_still_logs_an_llm_call_row(self, db_session):
+        events = [_event(1, "Test")]
+        profile = _profile("x", [], [])
+        with patch("app.ranking.OPENAI_API_KEY", "fake-key"), \
+             patch("app.ranking.get_llm") as mock_llm:
+            mock_llm.return_value.with_structured_output.return_value.invoke.side_effect = ConnectionError("timed out")
+            stage2_rerank(events, profile, db=db_session)
+        rows = db_session.query(LlmCallLog).filter_by(kind="rerank").all()
+        assert len(rows) == 1
+        assert rows[0].input_tokens == 0
+        assert rows[0].cost_usd == 0
+
     def test_on_batch_done_fires_once_per_batch_with_totals(self):
         # 5 events at batch size 2 (patched down from the real 25) -> 3 batches.
         events = [_event(i, f"Test {i}") for i in range(5)]
@@ -303,7 +315,7 @@ class TestEnsureEmbeddings:
             ensure_embeddings(db_session, [already, pending], profile)
 
         # only the pending event's text should have been sent for embedding
-        mock_embed.assert_any_call([f"{pending.title}  {pending.category}"])
+        mock_embed.assert_any_call([f"{pending.title}  {pending.category}"], db=db_session)
         assert already.embedding == [0.1, 0.2]  # untouched
         assert pending.embedding == [0.5, 0.6]
 
@@ -313,6 +325,22 @@ class TestEnsureEmbeddings:
         with patch("app.ranking.embed_batch", return_value=None):
             ensure_embeddings(db_session, [ev], profile)
         assert ev.embedding is None
+
+    def test_embed_batch_logs_an_llm_call_row(self, db_session):
+        from types import SimpleNamespace
+
+        from app.embeddings import embed_batch
+
+        fake_response = SimpleNamespace(
+            usage=SimpleNamespace(prompt_tokens=10, total_tokens=10),
+            data=[SimpleNamespace(embedding=[0.1, 0.2])],
+        )
+        with patch("app.embeddings.invoke_with_rotation", return_value=fake_response):
+            result = embed_batch(["hello"], db=db_session)
+        assert result == [[0.1, 0.2]]
+        row = db_session.query(LlmCallLog).filter_by(kind="embedding").one()
+        assert row.model == "text-embedding-3-small"
+        assert row.input_tokens == 10
 
 
 class TestPersistFeedbackWeights:

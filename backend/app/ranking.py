@@ -51,7 +51,7 @@ def ensure_embeddings(db: Session, events: list[Event], profile: InterestProfile
     pending = [ev for ev in events if ev.embedding is None]
     for i in range(0, len(pending), EMBED_BATCH_SIZE):
         batch = pending[i : i + EMBED_BATCH_SIZE]
-        vectors = embed_batch([_embed_text(ev) for ev in batch])
+        vectors = embed_batch([_embed_text(ev) for ev in batch], db=db)
         if vectors is None:
             continue
         for ev, vec in zip(batch, vectors):
@@ -60,7 +60,7 @@ def ensure_embeddings(db: Session, events: list[Event], profile: InterestProfile
         db.commit()
 
     if profile.raw_text.strip():
-        profile_vectors = embed_batch([profile.raw_text])
+        profile_vectors = embed_batch([profile.raw_text], db=db)
         if profile_vectors:
             profile.embedding = profile_vectors[0]
             db.commit()
@@ -294,6 +294,7 @@ def stage2_rerank(
         except Exception as exc:
             batch_quota_exhausted = is_quota_exhausted(exc)
             quota_exhausted = quota_exhausted or batch_quota_exhausted
+            latency_ms = int((time.perf_counter() - start) * 1000)
             logger.warning(
                 "stage2_rerank: batch LLM call failed, leaving these %d events' scores untouched",
                 len(batch), exc_info=True,
@@ -304,6 +305,15 @@ def stage2_rerank(
                 f"batch {batch_num}/{total_batches} failed: {exc}",
                 level="error",
                 detail={"error_type": type(exc).__name__, "quota_exhausted": batch_quota_exhausted},
+            )
+            log_call(
+                db,
+                kind="rerank",
+                model=last_model_used(),
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=latency_ms,
+                provider=last_provider_used(),
             )
             if on_batch_done:
                 on_batch_done(batch_num, total_batches)

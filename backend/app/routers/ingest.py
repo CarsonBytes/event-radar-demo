@@ -31,10 +31,10 @@ def trigger_ingest(db: Session = Depends(get_db)):
     try:
         started_at = dt.datetime.utcnow()
         start_perf = time.perf_counter()
-        fetched, new, updated, duplicates = _fetch_and_upsert(db)
+        fetched, new, updated, duplicates, connector_breakdown = _fetch_and_upsert(db)
         duration_ms = int((time.perf_counter() - start_perf) * 1000)
         db.add(
-            IngestRun(started_at=started_at, duration_ms=duration_ms, fetched=fetched, new=new, updated=updated, ranked=0)
+            IngestRun(started_at=started_at, duration_ms=duration_ms, fetched=fetched, new=new, updated=updated, ranked=0, connector_breakdown=connector_breakdown)
         )
         db.commit()
         log_event(

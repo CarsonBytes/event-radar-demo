@@ -34,6 +34,7 @@ PRICING: dict[str, tuple[float, float]] = {
     "gpt-4o": (2.50, 10.00),
     "gpt-5-mini": (0.25, 2.00),  # unconfirmed — approximate, verify against your proxy's actual billing
     "gpt-5.4-mini": (0.25, 2.00),  # unconfirmed — same approximate rate as gpt-5-mini, no published number to go on
+    "text-embedding-3-small": (0.02, 0.00),  # embeddings have no completion tokens; output price unused
 }
 DEFAULT_PRICING = (0.50, 1.50)
 
@@ -56,6 +57,7 @@ def log_call(
                 created_at=dt.datetime.utcnow(),
                 kind=kind,
                 model=model,
+                provider=provider,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 latency_ms=latency_ms,

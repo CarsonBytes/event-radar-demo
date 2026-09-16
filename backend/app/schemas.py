@@ -99,6 +99,7 @@ class IngestRunOut(BaseModel):
     new: int
     updated: int
     ranked: int
+    connector_breakdown: dict | None = None
 
     model_config = {"from_attributes": True}
 
@@ -107,6 +108,7 @@ class LlmCallOut(BaseModel):
     created_at: dt.datetime
     kind: str
     model: str
+    provider: str = "chatanywhere"
     input_tokens: int
     output_tokens: int
     latency_ms: int
